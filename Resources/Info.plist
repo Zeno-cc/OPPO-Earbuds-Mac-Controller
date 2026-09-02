@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleExecutable</key>
+	<string>BudsBar</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.aniketbudhwani.budsbar</string>
+	<key>CFBundleName</key>
+	<string>OPPO 耳机控制</string>
+	<key>CFBundleDisplayName</key>
+	<string>OPPO 耳机控制</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>26.0</string>
+	<!-- Menu bar only: no Dock icon, no main window. -->
+	<key>LSUIElement</key>
+	<true/>
+	<!-- Without this string the Bluetooth TCC prompt never appears and RFCOMM
+	     silently fails. -->
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>OPPO 耳机控制需要通过蓝牙读取耳机电量并切换降噪模式。</string>
+</dict>
+</plist>
