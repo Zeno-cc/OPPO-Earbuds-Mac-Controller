@@ -23,7 +23,7 @@
 
 [![前往下载](https://img.shields.io/badge/前往-GitHub%20Releases-blue?style=for-the-badge&logo=github)](https://github.com/Zeno-cc/OPPO-Earbuds-Mac-Controller/releases)
 
-发布安装包后，可在 Releases 页面下载、解压，并把应用拖入“应用程序”文件夹，再双击启动即可。
+在 Releases 页面下载 `.dmg` 安装包。双击打开后，把应用图标拖到“应用程序”快捷方式即可完成安装。
 
 如果 macOS 阻止打开，请在终端执行：
 
