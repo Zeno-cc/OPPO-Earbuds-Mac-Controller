@@ -48,7 +48,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // instead, by watching for a click outside.
         popover.behavior = .applicationDefined
         popover.delegate = self
-        popover.contentViewController = NSHostingController(rootView: PanelView(buds: buds))
+        let hostingController = NSHostingController(rootView: PanelView(buds: buds))
+        hostingController.sizingOptions = [.preferredContentSize, .intrinsicContentSize]
+        popover.contentViewController = hostingController
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.target = self
