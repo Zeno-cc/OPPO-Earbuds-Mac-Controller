@@ -185,6 +185,24 @@ final class ProtocolTests: XCTestCase {
             shortGame, profile: .encoAir5Pro).isEmpty)
     }
 
+    func testFree4NoiseModesAndLevels() throws {
+        let profile = BudsProtocol.Profile.encoFree4
+        let values: [(String, ANCLevel)] = [
+            ("10 00", .max), ("20 00", .moderate), ("40 00", .mild), ("80 00", .smart),
+        ]
+        for (wire, level) in values {
+            XCTAssertEqual(
+                try decode("aa 0c 00 00 04 02 ff 05 00 03 01 01 \(wire)", profile: profile),
+                [.noiseMode(.noiseCancellation), .ancLevel(level)])
+        }
+        XCTAssertEqual(
+            try decode("aa 0c 00 00 04 02 ff 05 00 03 01 01 08 00", profile: profile),
+            [.noiseMode(.off)])
+        XCTAssertEqual(
+            try decode("aa 0c 00 00 04 02 ff 05 00 03 01 01 00 01", profile: profile),
+            [.noiseMode(.transparency)])
+    }
+
     func testSmartCompanionReportsAreIgnored() throws {
         XCTAssertTrue(try decode("aa 0b 00 00 04 02 48 04 00 03 04 01 10").isEmpty)
         XCTAssertTrue(
@@ -314,6 +332,13 @@ final class ProtocolTests: XCTestCase {
             (.encoAir5Pro, .noiseCancellation, .moderate, 0x20),
             (.encoAir5Pro, .noiseCancellation, .mild, 0x40),
             (.encoAir5Pro, .noiseCancellation, .smart, 0x80),
+            (.encoFree4, .off, nil, 0x01),
+            (.encoFree4, .transparency, nil, 0x04),
+            (.encoFree4, .noiseCancellation, nil, 0x02),
+            (.encoFree4, .noiseCancellation, .max, 0x10),
+            (.encoFree4, .noiseCancellation, .moderate, 0x20),
+            (.encoFree4, .noiseCancellation, .mild, 0x40),
+            (.encoFree4, .noiseCancellation, .smart, 0x80),
         ]
 
         for (profile, mode, level, value) in mappings {
@@ -410,6 +435,7 @@ final class ProtocolTests: XCTestCase {
 
     func testProfileRegistryDoesNotGuessUnknownDevices() {
         XCTAssertEqual(BudsProtocol.Profile.forDeviceName("OPPO Enco Air5 Pro"), .encoAir5Pro)
+        XCTAssertEqual(BudsProtocol.Profile.forDeviceName("OPPO Enco Free4"), .encoFree4)
         XCTAssertEqual(BudsProtocol.Profile.forDeviceName("realme Buds T500 Pro"), .t500Pro)
         XCTAssertEqual(
             DeviceProfileRegistry.resolve(DeviceIdentity(
@@ -423,6 +449,7 @@ final class ProtocolTests: XCTestCase {
             BudsProtocol.Profile.encoAir5Pro.initialSyncPlan,
             [.battery, .deviceInformation, .equalizer, .gameMode])
         XCTAssertTrue(BudsProtocol.Profile.t500Pro.initialSyncPlan.isEmpty)
+        XCTAssertTrue(BudsProtocol.Profile.encoFree4.initialSyncPlan.isEmpty)
         XCTAssertTrue(BudsProtocol.Profile.unknown.initialSyncPlan.isEmpty)
     }
 
