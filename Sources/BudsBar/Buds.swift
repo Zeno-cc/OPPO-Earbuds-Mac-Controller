@@ -19,6 +19,8 @@ final class Buds: NSObject {
     // MARK: - Published state
 
     static let fallbackName = "耳机"
+    private static let lowBatteryNotificationError =
+        "低电量通知未开启，请在系统设置 > 通知中允许耳机控制发送通知。"
 
     var name: String = Buds.fallbackName
     /// Guards the one-shot background lookup in `syncName`; cleared on a new link.
@@ -27,6 +29,12 @@ final class Buds: NSObject {
     /// True once the vendor control channel is open — noise control needs it.
     var isControlChannelOpen = false
     var battery = Battery()
+    var batteryFeature: FeatureState<BatteryState> = .unknown
+    var deviceInformationFeature: FeatureState<DeviceInformation> = .unknown
+    var equalizerFeature: FeatureState<EQPreset> = .unknown
+    var gameModeFeature: FeatureState<Bool> = .unknown
+    var pendingEqualizer: EQPreset?
+    var pendingGameMode: Bool?
     /// Battery values exposed by macOS's Bluetooth runtime. This is a fallback while the
     /// vendor channel has not reported a per-bud value; macOS may expose only one aggregate
     /// headset percentage on the audio link.
@@ -40,7 +48,11 @@ final class Buds: NSObject {
     var isBusy = false
     var lastError: String?
     private let settings = AppSettings()
+    private let batteryNotificationCoordinator = BatteryNotificationCoordinator()
     var launchesAtLogin: Bool { settings.launchesAtLogin }
+    var lowBatteryNotificationsEnabled: Bool {
+        settings.lowBatteryNotificationsEnabled
+    }
 
     struct DeviceOption: Identifiable, Equatable {
         let id: String
@@ -106,6 +118,18 @@ final class Buds: NSObject {
         protocolProfile.capabilities.contains(.noiseControl)
     }
 
+    var supportsDeviceInformation: Bool {
+        protocolProfile.capabilities.contains(.deviceInformation)
+    }
+
+    var supportsEqualizer: Bool {
+        protocolProfile.capabilities.contains(.equalizer)
+    }
+
+    var supportsGameMode: Bool {
+        protocolProfile.capabilities.contains(.gameMode)
+    }
+
     /// Called whenever `isAvailable` or `isConnected` may have moved, so the status item can
     /// insert, remove, or recolour itself. A plain callback rather than observation: the
     /// owner is AppKit, not a SwiftUI view.
@@ -169,12 +193,15 @@ final class Buds: NSObject {
     private var accessoryBattery: Int?
     private var isAccessoryBatteryRequestInFlight = false
     private var lastAccessoryBatteryRequestAt = Date.distantPast
+    private var lastVendorBatteryRequestAt = Date.distantPast
+    private var lastSoundFeatureRequestAt = Date.distantPast
 
     override init() {
         super.init()
         refreshPairedDevices()
         device = selectedDeviceCandidate()
         protocolProfile = BudsProtocol.Profile.forDeviceName(device?.name)
+        batteryNotificationCoordinator.setEnabled(settings.lowBatteryNotificationsEnabled)
         syncName()
 
         // Fires for *any* device connecting; we filter to ours. There is no
@@ -194,6 +221,8 @@ final class Buds: NSObject {
             guard let self else { return }
             self.refreshConnectionState()
             self.ticks += 1
+            self.refreshBattery()
+            self.refreshSoundFeatures()
             if self.ticks % Self.ticksPerConnectAttempt == 0 { self.attemptAutoConnect() }
         }
         pollTimer?.tolerance = Self.pollInterval / 2   // no deadline worth a forced wakeup
@@ -210,6 +239,32 @@ final class Buds: NSObject {
 
     func setLaunchAtLogin(_ enabled: Bool) {
         lastError = settings.setLaunchAtLogin(enabled)
+    }
+
+    func setLowBatteryNotifications(_ enabled: Bool) {
+        guard enabled else {
+            settings.setLowBatteryNotificationsEnabled(false)
+            batteryNotificationCoordinator.setEnabled(false)
+            if lastError == Self.lowBatteryNotificationError { lastError = nil }
+            return
+        }
+
+        batteryNotificationCoordinator.requestAuthorization { [weak self] granted, error in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                let accepted = granted && error == nil
+                self.settings.setLowBatteryNotificationsEnabled(accepted)
+                self.batteryNotificationCoordinator.setEnabled(accepted)
+                if accepted {
+                    if self.lastError == Self.lowBatteryNotificationError {
+                        self.lastError = nil
+                    }
+                } else {
+                    self.lastError = Self.lowBatteryNotificationError
+                }
+                self.onStateChange?()
+            }
+        }
     }
 
     /// How often the link state is re-read. `isConnected()` is a local lookup, not a radio
@@ -268,9 +323,18 @@ final class Buds: NSObject {
         linkAssertedUntil = .distantPast
         lastFrameAt = .distantPast
         battery = Battery()
+        batteryFeature = .unknown
+        deviceInformationFeature = .unknown
+        equalizerFeature = .unknown
+        gameModeFeature = .unknown
+        pendingEqualizer = nil
+        pendingGameMode = nil
         systemBattery = Battery()
+        batteryNotificationCoordinator.reset()
         accessoryBattery = nil
         lastAccessoryBatteryRequestAt = .distantPast
+        lastVendorBatteryRequestAt = .distantPast
+        lastSoundFeatureRequestAt = .distantPast
         placement = Placement()
         mode = nil
         ancLevel = nil
@@ -522,6 +586,7 @@ final class Buds: NSObject {
             // are immediately re-reported when either bud is active again.
             battery = Battery(left: nil, right: nil, enclosure: battery.enclosure, combined: nil)
             systemBattery = Battery()
+            batteryNotificationCoordinator.reset()
             accessoryBattery = nil
             lastAccessoryBatteryRequestAt = .distantPast
             placement = Placement()
@@ -558,31 +623,36 @@ final class Buds: NSObject {
         let source = BluetoothDeviceDiscovery.pairedDeviceSnapshot(address: address) ?? device
 
         var next = Battery(
-            left: Self.systemBatteryValue(source, key: "batteryPercentLeft"),
-            right: Self.systemBatteryValue(source, key: "batteryPercentRight"),
-            enclosure: Self.systemBatteryValue(source, key: "batteryPercentCase"),
-            combined: Self.systemBatteryValue(source, key: "batteryPercentCombined")
-                ?? Self.systemBatteryValue(source, key: "batteryPercentSingle")
+            left: Self.systemBatteryValue(source, key: "batteryPercentLeft")
+                .map { BatteryReading(level: $0) },
+            right: Self.systemBatteryValue(source, key: "batteryPercentRight")
+                .map { BatteryReading(level: $0) },
+            enclosure: Self.systemBatteryValue(source, key: "batteryPercentCase")
+                .map { BatteryReading(level: $0) },
+            combined: (Self.systemBatteryValue(source, key: "batteryPercentCombined")
+                ?? Self.systemBatteryValue(source, key: "batteryPercentSingle"))
+                .map { BatteryReading(level: $0) }
         )
 
-        let runtimeHasHeadsetBattery = next.left != nil || next.right != nil
-            || next.combined != nil
+        let runtimeHasHeadsetBattery = next.left?.level != nil || next.right?.level != nil
+            || next.combined?.level != nil
         if runtimeHasHeadsetBattery {
             accessoryBattery = nil
         } else {
-            next.combined = accessoryBattery
+            next.combined = accessoryBattery.map { BatteryReading(level: $0) }
         }
 
         if next != systemBattery {
             systemBattery = next
+            updateBatteryNotifications()
             if Self.isTracing {
-                let value = next.combined.map(String.init) ?? "unknown"
+                let value = next.combined?.level.map(String.init) ?? "unknown"
                 AppLogger.bluetooth.debug("System battery combined=\(value, privacy: .public)")
             }
         }
 
-        let vendorHasHeadsetBattery = battery.left != nil || battery.right != nil
-            || battery.combined != nil
+        let vendorHasHeadsetBattery = battery.left?.level != nil || battery.right?.level != nil
+            || battery.combined?.level != nil
         if !runtimeHasHeadsetBattery, !vendorHasHeadsetBattery {
             requestAccessoryBatteryIfNeeded(
                 deviceName: device.name ?? name,
@@ -634,6 +704,10 @@ final class Buds: NSObject {
         let transport = RFCOMMTransport(device: device, tracing: Self.isTracing)
         var initialState = EarbudsState()
         initialState.battery = battery
+        initialState.batteryFeature = batteryFeature
+        initialState.deviceInformationFeature = deviceInformationFeature
+        initialState.equalizerFeature = equalizerFeature
+        initialState.gameModeFeature = gameModeFeature
         initialState.placement = placement
         initialState.mode = mode
         initialState.ancLevel = ancLevel
@@ -668,9 +742,19 @@ final class Buds: NSObject {
 
         let next = earbudsSession.state
         battery = next.battery
+        batteryFeature = next.batteryFeature
+        deviceInformationFeature = next.deviceInformationFeature
+        equalizerFeature = next.equalizerFeature
+        gameModeFeature = next.gameModeFeature
+        pendingEqualizer = next.pendingEqualizer
+        pendingGameMode = next.pendingGameMode
+        if case .loading = batteryFeature {
+            lastVendorBatteryRequestAt = Date()
+        }
         placement = next.placement
         mode = next.mode
         ancLevel = next.ancLevel
+        updateBatteryNotifications()
 
         if case .failed(let error) = earbudsSession.connectionState {
             lastError = error.message
@@ -683,6 +767,27 @@ final class Buds: NSObject {
             }
         }
         onStateChange?()
+    }
+
+    private func updateBatteryNotifications() {
+        func preferred(_ vendor: BatteryReading?, _ system: BatteryReading?) -> BatteryReading? {
+            vendor?.level != nil ? vendor : system
+        }
+
+        let left = preferred(battery.left, systemBattery.left)
+        let right = preferred(battery.right, systemBattery.right)
+        var suppressedComponents: Set<BatteryComponent> = []
+        if placement.left == .inCase { suppressedComponents.insert(.left) }
+        if placement.right == .inCase { suppressedComponents.insert(.right) }
+
+        batteryNotificationCoordinator.update(
+            deviceName: name,
+            state: Battery(
+                left: left,
+                right: right,
+                enclosure: preferred(battery.enclosure, systemBattery.enclosure),
+                combined: preferred(battery.combined, systemBattery.combined)),
+            suppressing: suppressedComponents)
     }
 
     // MARK: - Noise control
@@ -710,6 +815,53 @@ final class Buds: NSObject {
         if earbudsSession?.set(ancLevel: requested) != true {
             lastError = "控制通道尚未就绪"
         }
+    }
+
+    func set(equalizer preset: EQPreset) {
+        guard supportsEqualizer else {
+            lastError = "此耳机型号尚未适配均衡器控制"
+            return
+        }
+        if earbudsSession?.set(equalizer: preset) != true {
+            lastError = "控制通道尚未就绪"
+        }
+    }
+
+    func set(gameMode enabled: Bool) {
+        guard supportsGameMode else {
+            lastError = "此耳机型号尚未适配游戏模式"
+            return
+        }
+        if earbudsSession?.set(gameMode: enabled) != true {
+            lastError = "控制通道尚未就绪"
+        }
+    }
+
+    private static let vendorBatteryRefreshInterval: TimeInterval = 30
+
+    func refreshBattery(force: Bool = false) {
+        guard isConnected,
+              force || Date().timeIntervalSince(lastVendorBatteryRequestAt)
+                  >= Self.vendorBatteryRefreshInterval,
+              earbudsSession?.retryBatterySync() == true
+        else { return }
+        lastVendorBatteryRequestAt = Date()
+    }
+
+    func refreshDeviceInformation() {
+        _ = earbudsSession?.retryDeviceInformationSync()
+    }
+
+    private static let soundFeatureRefreshInterval: TimeInterval = 10
+
+    func refreshSoundFeatures(force: Bool = false) {
+        guard isConnected,
+              supportsEqualizer || supportsGameMode,
+              force || Date().timeIntervalSince(lastSoundFeatureRequestAt)
+                  >= Self.soundFeatureRefreshInterval,
+              earbudsSession?.refreshSoundFeatures() == true
+        else { return }
+        lastSoundFeatureRequestAt = Date()
     }
 
     // MARK: - Mode cycle test

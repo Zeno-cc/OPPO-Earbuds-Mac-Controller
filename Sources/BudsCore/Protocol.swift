@@ -55,6 +55,24 @@ public enum ANCLevel: String, CaseIterable, Identifiable {
     }
 }
 
+/// The three factory equalizer presets exposed by OPPO Enco Air5 Pro.
+/// Custom equalizer curves are intentionally outside the v1.2 scope.
+public enum EQPreset: UInt8, CaseIterable, Identifiable {
+    case original = 0x00
+    case vocals = 0x02
+    case bass = 0x01
+
+    public var id: UInt8 { rawValue }
+
+    public var label: String {
+        switch self {
+        case .original: return "至臻原音"
+        case .vocals: return "纯享人声"
+        case .bass: return "澎湃低音"
+        }
+    }
+}
+
 /// Wire format for the `oppointeraction` RFCOMM channel on realme/OPPO earbuds.
 ///
 /// Pure functions over bytes — no I/O — so `selfCheck()` can exercise them against
@@ -69,8 +87,18 @@ public enum ANCLevel: String, CaseIterable, Identifiable {
 public enum BudsProtocol {
 
     public static let sync: UInt8 = 0xaa
-    /// The only opcode observed: an unsolicited device status report.
+    /// Unsolicited device status report.
     public static let opcodeStatusReport: UInt16 = 0x0402
+    public static let opcodeBatteryQuery: UInt16 = 0x0601
+    public static let opcodeBatteryResponse: UInt16 = 0x0681
+    public static let opcodeDeviceInformationQuery: UInt16 = 0x0501
+    public static let opcodeDeviceInformationResponse: UInt16 = 0x0581
+    public static let opcodeEqualizerQuery: UInt16 = 0x0f01
+    public static let opcodeEqualizerResponse: UInt16 = 0x0f81
+    public static let opcodeEqualizerReport: UInt16 = 0x0405
+    public static let opcodeGameModeQuery: UInt16 = 0x0d01
+    public static let opcodeGameModeResponse: UInt16 = 0x0d81
+    public static let gameModeFeatureID: UInt8 = 0x06
 
     public struct Frame {
         public var opcode: UInt16
@@ -91,9 +119,12 @@ public enum BudsProtocol {
         /// must keep its last value while a slot that is present but unreadable must be
         /// cleared. Bundling all three into one update collapsed those two cases together,
         /// and a case that had gone to sleep kept showing its last percentage forever.
-        case battery(BatterySlot, Int?)
+        case battery(BatterySlot, BatteryReading?)
         /// Where one bud is. Only emitted for values `BudPlacement` recognises.
         case placement(BatterySlot, BudPlacement)
+        case deviceInformation(DeviceInformation)
+        case equalizer(EQPreset)
+        case gameMode(Bool)
     }
 
     public enum BatterySlot: UInt8 {
@@ -102,21 +133,33 @@ public enum BudsProtocol {
         case enclosure = 0x03
     }
 
-    /// Where a bud is, decoded from the `02` block — the one thing that tells a bud charging
-    /// in the case from a bud in use.
+    /// Where a bud is, decoded from the `02` block. Wire values are profile-specific and
+    /// are translated by `Profile.decodePlacement`.
     ///
-    /// The block is a per-slot list keyed by the same ids as the battery one. Captured with
-    /// the right bud worn and the left in an open case it read `01 00  02 03  03 04`, and
-    /// with both buds in the case `01 00  02 00  03 04`: the worn bud's slot is the only one
-    /// that moved. The enclosure's own value (`04`) is something else and stays undecoded, so
-    /// it falls out of `init?(rawValue:)` on its own rather than needing a special case.
-    ///
-    /// Only the two values above are known. A bud out of the case but not in an ear may well
-    /// report a third, so an unrecognised value means "no idea" and the UI leaves the cell
-    /// alone rather than guessing it into one of these.
-    public enum BudPlacement: UInt8 {
-        case inCase = 0x00
-        case inUse = 0x03
+    /// The semantic values deliberately have no raw wire representation: T500 reports
+    /// `00/03`, while Air5 reports `04/05`. Transitional values such as Air5 `07` remain
+    /// unknown and leave the last stable UI state alone.
+    public enum BudPlacement: Equatable {
+        case inCase
+        case inUse
+    }
+
+    /// Decodes one battery byte without sharing Air5-only charging semantics with other
+    /// profiles. Air5 uses bit 7 as the charging flag and the low seven bits as 0...100%.
+    private static func decodeBattery(
+        _ value: UInt8,
+        profile: Profile,
+        zeroMeansUnknown: Bool
+    ) -> BatteryReading? {
+        if profile == .encoAir5Pro {
+            let level = Int(value & 0x7f)
+            guard level <= 100, !(zeroMeansUnknown && value == 0) else { return nil }
+            return BatteryReading(level: level, isCharging: value & 0x80 != 0)
+        }
+
+        let level = Int(value)
+        guard (zeroMeansUnknown ? 1...100 : 0...100).contains(level) else { return nil }
+        return BatteryReading(level: level)
     }
 
     // MARK: - Payload types
@@ -177,23 +220,24 @@ public enum BudsProtocol {
             if start > 0 { buffer.removeFirst(start) }
 
             guard buffer.count >= 2 else { break }
-            let total = Int(buffer[1]) + 2
-            guard total >= 9 else {
+            let declaredTotal = Int(buffer[1]) + 2
+            guard declaredTotal >= 9 else {
                 // Not a plausible frame — drop the sync byte and look for the next one.
                 buffer.removeFirst()
                 continue
             }
-            guard buffer.count >= total else { break }   // wait for the rest
+            guard buffer.count >= declaredTotal else { break }   // wait for the rest
 
-            let raw = Array(buffer[0..<total])
+            let raw = Array(buffer[0..<declaredTotal])
+            let opcode = UInt16(raw[4]) << 8 | UInt16(raw[5])
             let payloadLength = Int(raw[7]) | Int(raw[8]) << 8
-            if 9 + payloadLength == total {
+            if 9 + payloadLength == declaredTotal {
                 frames.append(Frame(
-                    opcode: UInt16(raw[4]) << 8 | UInt16(raw[5]),
+                    opcode: opcode,
                     sequence: raw[6],
-                    payload: Array(raw[9..<total]),
+                    payload: Array(raw[9..<declaredTotal]),
                     raw: raw))
-                buffer.removeFirst(total)
+                buffer.removeFirst(declaredTotal)
             } else {
                 // Length fields disagree: this was not a frame boundary after all.
                 buffer.removeFirst()
@@ -204,6 +248,14 @@ public enum BudsProtocol {
     }
 
     public static func interpret(_ frame: Frame, profile: Profile = .t500Pro) -> [Update] {
+        if frame.opcode == opcodeEqualizerReport {
+            guard profile.capabilities.contains(.equalizer),
+                  frame.payload.count == 1,
+                  let preset = EQPreset(rawValue: frame.payload[0])
+            else { return [] }
+            return [.equalizer(preset)]
+        }
+
         guard frame.opcode == opcodeStatusReport else { return [] }
 
         let payload = frame.payload
@@ -220,13 +272,14 @@ public enum BudsProtocol {
 
         switch type {
         case .battery:
+            guard payload.count == 2 + count * 2 else { return [] }
             return pairs.compactMap { id, value in
                 guard let slot = BatterySlot(rawValue: id) else { return nil }
-                // A slot reports 0 while it is asleep or shut rather than dropping out of
-                // the frame. Air5 also uses values outside the percentage range (for example
-                // `e4`) as an unavailable sentinel. Neither is a real battery reading.
-                let percentage = Int(value)
-                return .battery(slot, (1...100).contains(percentage) ? percentage : nil)
+                // A passive slot reports plain zero while it is asleep or shut. Air5 values
+                // with bit 7 set are still real percentages; the bit means charging.
+                return .battery(
+                    slot,
+                    decodeBattery(value, profile: profile, zeroMeansUnknown: true))
             }
 
         case .noiseMode:
@@ -250,13 +303,133 @@ public enum BudsProtocol {
             return [.noiseMode(decoded.mode), .ancLevel(decoded.level)]
 
         case .placement:
+            guard payload.count == 2 + count * 2 else { return [] }
             return pairs.compactMap { id, value in
                 guard let slot = BatterySlot(rawValue: id),
-                      let placement = BudPlacement(rawValue: value)
+                      slot != .enclosure,
+                      let placement = profile.decodePlacement(value)
                 else { return nil }
                 return .placement(slot, placement)
             }
         }
+    }
+
+    /// Decodes the Air5 response observed for the read-only `06 01` battery query.
+    /// Its payload uses a `00` prefix followed by the same slot/value pairs as the
+    /// unsolicited battery report: `00 <count> <slot> <value> ...`.
+    public static func interpretBatteryResponse(
+        _ frame: Frame,
+        profile: Profile
+    ) -> [Update] {
+        guard profile.capabilities.contains(.activeBatteryQuery),
+              frame.opcode == opcodeBatteryResponse,
+              frame.payload.count >= 2,
+              frame.payload[0] == 0x00
+        else { return [] }
+
+        let count = Int(frame.payload[1])
+        guard count > 0, frame.payload.count == 2 + count * 2 else { return [] }
+
+        return stride(from: 2, to: frame.payload.count, by: 2).compactMap { index in
+            guard let slot = BatterySlot(rawValue: frame.payload[index]) else { return nil }
+            // Unlike the unsolicited report, no capture has shown that zero means a
+            // sleeping slot in this query response, so preserve a genuine 0%.
+            return .battery(
+                slot,
+                decodeBattery(
+                    frame.payload[index + 1], profile: profile, zeroMeansUnknown: false))
+        }
+    }
+
+    /// Decodes the Air5 remote-version response captured from firmware 158.158.105.
+    ///
+    /// Payload layout:
+    /// `<status=0> <entry-count> <UTF-8 CSV of device-type,version-type,value triples>`.
+    /// Device types 1/2/3 are left/right/case and version type 2 is software. Hardware
+    /// entries and future unknown triples are ignored; all three software components are
+    /// required before the combined version is shown.
+    public static func interpretDeviceInformationResponse(
+        _ frame: Frame,
+        profile: Profile
+    ) -> [Update] {
+        guard profile.capabilities.contains(.deviceInformation),
+              frame.opcode == opcodeDeviceInformationResponse,
+              frame.payload.count >= 2,
+              frame.payload[0] == 0,
+              let modelIdentifier = profile.modelIdentifier
+        else { return [] }
+
+        let entryCount = Int(frame.payload[1])
+        guard entryCount > 0,
+              let csv = String(bytes: frame.payload.dropFirst(2), encoding: .utf8)
+        else { return [] }
+
+        let fields = csv.split(separator: ",", omittingEmptySubsequences: false)
+        guard fields.count == entryCount * 3 else { return [] }
+
+        var softwareVersions: [Int: String] = [:]
+        for offset in stride(from: 0, to: fields.count, by: 3) {
+            guard let deviceType = Int(fields[offset]),
+                  let versionType = Int(fields[offset + 1])
+            else { return [] }
+            let version = fields[offset + 2].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !version.isEmpty else { return [] }
+
+            guard versionType == 2, (1...3).contains(deviceType) else { continue }
+            guard softwareVersions[deviceType] == nil else { return [] }
+            softwareVersions[deviceType] = version
+        }
+
+        guard let left = softwareVersions[1],
+              let right = softwareVersions[2],
+              let enclosure = softwareVersions[3]
+        else { return [] }
+
+        return [.deviceInformation(DeviceInformation(
+            modelIdentifier: DeviceInformationField(
+                modelIdentifier, source: .profileMetadata),
+            firmwareVersion: DeviceInformationField(
+                [left, right, enclosure].joined(separator: "."), source: .remoteQuery)))]
+    }
+
+    /// Decodes the Air5 factory-EQ query captured from firmware 158.158.105.
+    /// Payload layout: `<status=0> <preset>`.
+    public static func interpretEqualizerResponse(
+        _ frame: Frame,
+        profile: Profile
+    ) -> [Update] {
+        guard profile.capabilities.contains(.equalizer),
+              frame.opcode == opcodeEqualizerResponse,
+              frame.payload.count == 2,
+              frame.payload[0] == 0,
+              let preset = EQPreset(rawValue: frame.payload[1])
+        else { return [] }
+        return [.equalizer(preset)]
+    }
+
+    /// Decodes the Air5 switch-feature query for feature 6 (game low latency).
+    /// Payload layout: `<status=0> <count> <feature> <state> ...`.
+    public static func interpretGameModeResponse(
+        _ frame: Frame,
+        profile: Profile
+    ) -> [Update] {
+        guard profile.capabilities.contains(.gameMode),
+              frame.opcode == opcodeGameModeResponse,
+              frame.payload.count >= 4,
+              frame.payload[0] == 0
+        else { return [] }
+
+        let count = Int(frame.payload[1])
+        guard count > 0, frame.payload.count == 2 + count * 2 else { return [] }
+        for index in stride(from: 2, to: frame.payload.count, by: 2) {
+            guard frame.payload[index] == gameModeFeatureID else { continue }
+            switch frame.payload[index + 1] {
+            case 0: return [.gameMode(false)]
+            case 1: return [.gameMode(true)]
+            default: return []
+            }
+        }
+        return []
     }
 
     public static func hex(_ bytes: [UInt8]) -> String {
@@ -277,21 +450,36 @@ public enum BudsProtocol {
         assert(frames.count == 1, "one battery frame")
         assert(buffer.isEmpty, "buffer fully consumed")
         assert(frames[0].opcode == opcodeStatusReport)
-        assert(interpret(frames[0]) == [.battery(.left, 100), .battery(.right, 100),
-                                        .battery(.enclosure, 80)])
+        assert(interpret(frames[0]) == [.battery(.left, .init(level: 100)),
+                                        .battery(.right, .init(level: 100)),
+                                        .battery(.enclosure, .init(level: 80))])
 
         // Same report with the case asleep — must read as unknown, not 0%.
         buffer = bytes("aa 0f 00 00 04 02 10 08 00 01 03 01 64 02 64 03 00")
         frames = drainFrames(from: &buffer)
-        assert(interpret(frames[0]) == [.battery(.left, 100), .battery(.right, 100),
+        assert(interpret(frames[0]) == [.battery(.left, .init(level: 100)),
+                                        .battery(.right, .init(level: 100)),
                                         .battery(.enclosure, nil)],
                "a sleeping case reads as unknown, and says so rather than staying silent")
+
+        // Air5 Pro remote-version response captured while the official phone app showed
+        // firmware 158.158.105. Version type 1 is case hardware (01); type 2 is software.
+        buffer = bytes("aa 27 00 00 05 81 03 20 00 00 04 31 2c 32 2c 31 35 38 2c 32 2c 32 2c 31 35 38 2c 33 2c 31 2c 30 31 2c 33 2c 32 2c 31 30 35")
+        frames = drainFrames(from: &buffer)
+        assert(interpretDeviceInformationResponse(frames[0], profile: .encoAir5Pro)
+               == [.deviceInformation(DeviceInformation(
+                    modelIdentifier: DeviceInformationField(
+                        "OPPO Enco Air5 Pro", source: .profileMetadata),
+                    firmwareVersion: DeviceInformationField(
+                        "158.158.105", source: .remoteQuery)))],
+               "Air5 device information response")
 
         // A partial frame: left and case only, no right. The absent slot must produce no
         // update at all, so whatever the UI already had for it survives.
         buffer = bytes("aa 0d 00 00 04 02 99 06 00 01 02 01 64 03 00")
         frames = drainFrames(from: &buffer)
-        assert(interpret(frames[0]) == [.battery(.left, 100), .battery(.enclosure, nil)],
+        assert(interpret(frames[0]) == [.battery(.left, .init(level: 100)),
+                                        .battery(.enclosure, nil)],
                "an absent slot is not the same as an unknown one")
 
         // Noise mode, captured while commanding each mode in turn.
@@ -354,7 +542,8 @@ public enum BudsProtocol {
         // Placement is what tells the two apart.
         buffer = bytes("aa 0d 00 00 04 02 97 06 00 01 02 02 64 03 00")
         frames = drainFrames(from: &buffer)
-        assert(interpret(frames[0]) == [.battery(.right, 100), .battery(.enclosure, nil)],
+        assert(interpret(frames[0]) == [.battery(.right, .init(level: 100)),
+                                        .battery(.enclosure, nil)],
                "a bud in the case is absent from the battery report, not zero")
 
         // The frame we send to set a mode must be well formed, carry the set opcode
@@ -402,16 +591,18 @@ public enum BudsProtocol {
         buffer = bytes("aa 0d 00 00 04 02 24 06 00 01 02 01 64 02 64")
         frames = drainFrames(from: &buffer)
         assert(interpret(frames[0], profile: air5)
-               == [.battery(.left, 100), .battery(.right, 100)],
+               == [.battery(.left, .init(level: 100, isCharging: false)),
+                   .battery(.right, .init(level: 100, isCharging: false))],
                "Air5 per-bud battery frame")
 
-        // Air5 uses e4 for an unavailable bud while still reporting the other bud and case.
-        // Keep the known slots and mark only the sentinel-bearing slot as unknown.
+        // Air5 uses bit 7 as charging and the low seven bits as the percentage.
         buffer = bytes("aa 0f 00 00 04 02 4f 08 00 01 03 01 e4 02 64 03 1e")
         frames = drainFrames(from: &buffer)
         assert(interpret(frames[0], profile: air5)
-               == [.battery(.left, nil), .battery(.right, 100), .battery(.enclosure, 30)],
-               "Air5 unavailable-bud sentinel with case battery")
+               == [.battery(.left, .init(level: 100, isCharging: true)),
+                   .battery(.right, .init(level: 100, isCharging: false)),
+                   .battery(.enclosure, .init(level: 30, isCharging: false))],
+               "Air5 charging bit with per-slot battery")
 
         for (wire, expected) in [("10 00", ANCLevel.max),
                                  ("20 00", .moderate),
@@ -448,6 +639,23 @@ public enum BudsProtocol {
         assert(encoder.encodeSetNoiseMode(.transparency, profile: air5)?.last == 0x04,
                "Air5 set Transparency")
 
+        // Air5 factory EQ: Mac writes were acknowledged, echoed as `04 05`, and read back
+        // with `0f 81` for all three values on firmware 158.158.105.
+        buffer = bytes("aa 08 00 00 04 05 f8 01 00 02")
+        frames = drainFrames(from: &buffer)
+        assert(interpret(frames[0], profile: air5) == [.equalizer(.vocals)],
+               "Air5 EQ unsolicited report")
+        buffer = bytes("aa 09 00 00 0f 81 06 02 00 00 02")
+        frames = drainFrames(from: &buffer)
+        assert(interpretEqualizerResponse(frames[0], profile: air5)
+               == [.equalizer(.vocals)], "Air5 EQ query")
+
+        // Feature 6 is the Air5 game-low-latency preference.
+        buffer = bytes("aa 0b 00 00 0d 81 0e 04 00 00 01 06 01")
+        frames = drainFrames(from: &buffer)
+        assert(interpretGameModeResponse(frames[0], profile: air5)
+               == [.gameMode(true)], "Air5 game mode query")
+
         // Two frames arriving coalesced in one read.
         buffer = bytes("aa 0b 00 00 04 02 1a 04 00 03 01 01 08")
              + bytes("aa 0f 00 00 04 02 0c 08 00 01 03 01 64 02 64 03 50")
@@ -461,8 +669,9 @@ public enum BudsProtocol {
         buffer.append(contentsOf: whole[6...])
         frames = drainFrames(from: &buffer)
         assert(frames.count == 1 && buffer.isEmpty, "frame completed across reads")
-        assert(interpret(frames[0]) == [.battery(.left, 100), .battery(.right, 100),
-                                        .battery(.enclosure, 80)])
+        assert(interpret(frames[0]) == [.battery(.left, .init(level: 100)),
+                                        .battery(.right, .init(level: 100)),
+                                        .battery(.enclosure, .init(level: 80))])
 
         // Leading garbage before the sync byte must be skipped, not fatal.
         buffer = bytes("ff ff") + whole
