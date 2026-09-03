@@ -6,10 +6,12 @@ import ServiceManagement
 final class AppSettings {
     private enum Key {
         static let preferredDeviceAddress = "preferredDeviceAddress"
+        static let lowBatteryNotificationsEnabled = "lowBatteryNotificationsEnabled"
     }
 
     private let defaults: UserDefaults
     private(set) var launchesAtLogin: Bool
+    private(set) var lowBatteryNotificationsEnabled: Bool
     var preferredDeviceAddress: String? {
         didSet {
             if let preferredDeviceAddress {
@@ -23,6 +25,8 @@ final class AppSettings {
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         self.launchesAtLogin = SMAppService.mainApp.status == .enabled
+        self.lowBatteryNotificationsEnabled = defaults.bool(
+            forKey: Key.lowBatteryNotificationsEnabled)
         self.preferredDeviceAddress = defaults.string(forKey: Key.preferredDeviceAddress)
     }
 
@@ -46,5 +50,10 @@ final class AppSettings {
             refreshLaunchAtLogin()
             return "开机自动启动设置失败：\(error.localizedDescription)"
         }
+    }
+
+    func setLowBatteryNotificationsEnabled(_ enabled: Bool) {
+        lowBatteryNotificationsEnabled = enabled
+        defaults.set(enabled, forKey: Key.lowBatteryNotificationsEnabled)
     }
 }

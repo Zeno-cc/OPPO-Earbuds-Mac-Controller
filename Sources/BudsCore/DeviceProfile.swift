@@ -23,6 +23,10 @@ public struct DeviceCapabilities: OptionSet, Equatable {
     public static let placement = Self(rawValue: 1 << 1)
     public static let noiseControl = Self(rawValue: 1 << 2)
     public static let ancLevels = Self(rawValue: 1 << 3)
+    public static let activeBatteryQuery = Self(rawValue: 1 << 4)
+    public static let deviceInformation = Self(rawValue: 1 << 5)
+    public static let equalizer = Self(rawValue: 1 << 6)
+    public static let gameMode = Self(rawValue: 1 << 7)
 
     static let knownOPO: Self = [.battery, .placement, .noiseControl, .ancLevels]
     static let unknownOPO: Self = [.battery, .placement]
@@ -64,8 +68,29 @@ extension BudsProtocol {
 
         public var capabilities: DeviceCapabilities {
             switch self {
-            case .t500Pro, .encoAir5Pro: return .knownOPO
+            case .t500Pro: return .knownOPO
+            case .encoAir5Pro:
+                return [
+                    .knownOPO, .activeBatteryQuery, .deviceInformation, .equalizer, .gameMode,
+                ]
             case .unknown: return .unknownOPO
+            }
+        }
+
+        public var initialSyncPlan: [SyncFeature] {
+            var plan: [SyncFeature] = []
+            if capabilities.contains(.activeBatteryQuery) { plan.append(.battery) }
+            if capabilities.contains(.deviceInformation) { plan.append(.deviceInformation) }
+            if capabilities.contains(.equalizer) { plan.append(.equalizer) }
+            if capabilities.contains(.gameMode) { plan.append(.gameMode) }
+            return plan
+        }
+
+        public var modelIdentifier: String? {
+            switch self {
+            case .encoAir5Pro: return "OPPO Enco Air5 Pro"
+            case .t500Pro: return "realme Buds T500 Pro"
+            case .unknown: return nil
             }
         }
 
@@ -136,6 +161,25 @@ extension BudsProtocol {
             }
         }
 
+        public func decodePlacement(_ value: UInt8) -> BudPlacement? {
+            switch self {
+            case .t500Pro:
+                switch value {
+                case 0x00: return .inCase
+                case 0x03: return .inUse
+                default: return nil
+                }
+            case .encoAir5Pro:
+                switch value {
+                case 0x04: return .inCase
+                case 0x05: return .inUse
+                default: return nil
+                }
+            case .unknown:
+                return nil
+            }
+        }
+
         public var modeValueBytes: Int {
             switch self {
             case .encoAir5Pro: return 2
@@ -143,5 +187,12 @@ extension BudsProtocol {
             case .unknown: return 0
             }
         }
+    }
+
+    public enum SyncFeature: Equatable {
+        case battery
+        case deviceInformation
+        case equalizer
+        case gameMode
     }
 }

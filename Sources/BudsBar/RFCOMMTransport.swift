@@ -67,6 +67,9 @@ final class RFCOMMTransport: NSObject, ControlTransport, IOBluetoothRFCOMMChanne
     @discardableResult
     func send(_ packet: [UInt8]) -> Bool {
         guard let channel, isOpen else { return false }
+        if tracing {
+            AppLogger.transport.debug("TX \(BudsProtocol.hex(packet), privacy: .public)")
+        }
         var bytes = packet
         let result = bytes.withUnsafeMutableBytes { raw in
             channel.writeAsync(raw.baseAddress, length: UInt16(raw.count), refcon: nil)
