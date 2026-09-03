@@ -12,3 +12,10 @@ Realme TWS Mac Controller.app/
 
 # claude
 CLAUDE.md
+
+# Trellis local workflow and generated editor files
+.trellis/
+.claude/
+.cursor/
+AGENTS.md
+.gitattributes

@@ -1,4 +1,5 @@
 import AppKit
+import BudsCore
 import SwiftUI
 
 @main

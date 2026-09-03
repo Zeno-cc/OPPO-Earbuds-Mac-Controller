@@ -1,3 +1,4 @@
+import BudsCore
 import SwiftUI
 
 struct PanelView: View {
@@ -10,7 +11,11 @@ struct PanelView: View {
                 header
                 if buds.isConnected {
                     batteryRow
-                    noiseControlCard
+                    if buds.supportsNoiseControl {
+                        noiseControlCard
+                    } else {
+                        unsupportedDeviceCard
+                    }
                 } else {
                     disconnectedNote
                 }
@@ -44,11 +49,41 @@ struct PanelView: View {
     private var header: some View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(buds.name)
-                    .font(.system(size: 15, weight: .semibold))
-                    .lineLimit(1)
-                Text(buds.isPaired ? (buds.isConnected ? "已连接" : "未连接")
-                                   : "未配对")
+                if buds.availableDevices.count > 1 && !buds.isDeviceSelectionLocked {
+                    Menu {
+                        ForEach(buds.availableDevices) { device in
+                            Button {
+                                buds.selectDevice(address: device.id)
+                            } label: {
+                                if device.id == buds.selectedDeviceAddress {
+                                    Label(device.name, systemImage: "checkmark")
+                                } else {
+                                    Text(device.name)
+                                }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text(buds.name)
+                                .font(.system(size: 15, weight: .semibold))
+                                .lineLimit(1)
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 9, weight: .semibold))
+                        }
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .disabled(buds.isBusy)
+                } else {
+                    Text(buds.name)
+                        .font(.system(size: 15, weight: .semibold))
+                        .lineLimit(1)
+                }
+                Text(buds.requiresDeviceSelection
+                     ? "请选择设备"
+                     : buds.isPaired ? (buds.isConnected ? "已连接" : "未连接")
+                                     : "未配对")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -84,13 +119,34 @@ struct PanelView: View {
     }
 
     private var disconnectedNote: some View {
-        Text(buds.isPaired
-             ? "请将耳机从充电盒中取出，然后打开电源开关以连接。"
-             : "没有找到支持此协议的已配对耳机。请先在蓝牙设置中配对 realme 或 OPPO 耳机。")
+        Text(disconnectedMessage)
             .font(.callout)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var disconnectedMessage: String {
+        if buds.requiresDeviceSelection {
+            return "检测到多副兼容耳机，请从上方列表选择要控制的设备。"
+        }
+        if buds.isPaired {
+            return "请将耳机从充电盒中取出，然后打开电源开关以连接。"
+        }
+        return "没有找到支持此协议的已配对耳机。请先在蓝牙设置中配对 realme 或 OPPO 耳机。"
+    }
+
+    private var unsupportedDeviceCard: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("此型号尚未适配控制功能", systemImage: "info.circle")
+                .font(.callout.weight(.medium))
+            Text("当前仍会显示耳机能够上报的电量，但不会发送降噪等型号专用命令。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassEffect(.regular, in: .rect(cornerRadius: 16))
     }
 
     // MARK: - Battery
@@ -276,10 +332,13 @@ struct PanelView: View {
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
-    private var canSwitchModes: Bool { buds.isControlChannelOpen }
+    private var canSwitchModes: Bool {
+        buds.isControlChannelOpen && buds.supportsNoiseControl
+    }
 
     private var modeSwitchingNote: String? {
-        buds.isControlChannelOpen ? nil : "正在等待控制通道…"
+        if !buds.supportsNoiseControl { return "此耳机型号尚未适配降噪控制" }
+        return buds.isControlChannelOpen ? nil : "正在等待控制通道…"
     }
 
     private func noiseButton(_ mode: NoiseMode) -> some View {
