@@ -4,7 +4,7 @@
 set -e
 
 APP="OPPO Earbuds Mac Controller.app"
-URL="https://github.com/Zeno-cc/OPPO-Earbuds-Mac-Controller/releases/latest/download/OPPO-Earbuds-Mac-Controller-v1.0.1-macOS.dmg"
+URL="https://github.com/Zeno-cc/OPPO-Earbuds-Mac-Controller/releases/latest/download/OPPO-Earbuds-Mac-Controller-v1.1.0-macOS.dmg"
 
 TMP=$(mktemp -d)
 MOUNT="$TMP/mount"

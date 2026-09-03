@@ -25,12 +25,22 @@ let package = Package(
     name: "BudsBar",
     platforms: [.macOS(.v26)],
     targets: [
+        .target(
+            name: "BudsCore",
+            path: "Sources/BudsCore",
+            swiftSettings: [.swiftLanguageMode(.v5)]),
         .executableTarget(
             name: "BudsBar",
+            dependencies: ["BudsCore"],
             path: "Sources/BudsBar",
             // Everything here runs on the main thread apart from two explicit
             // dispatches, and IOBluetooth predates Sendable. Strict concurrency
             // checking buys nothing but ceremony at this size.
-            swiftSettings: [.swiftLanguageMode(.v5)] + swiftUIMacros)
+            swiftSettings: [.swiftLanguageMode(.v5)] + swiftUIMacros),
+        .testTarget(
+            name: "BudsBarTests",
+            dependencies: ["BudsCore", "BudsBar"],
+            path: "Tests/BudsBarTests",
+            swiftSettings: [.swiftLanguageMode(.v5)])
     ]
 )

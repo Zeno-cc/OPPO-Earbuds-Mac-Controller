@@ -1,7 +1,7 @@
+import BudsCore
 import Foundation
 import IOBluetooth
 import Observation
-import ServiceManagement
 
 /// Live state of the earbuds plus the Bluetooth plumbing that produces it.
 ///
@@ -11,17 +11,10 @@ import ServiceManagement
 ///   - the vendor RFCOMM control channel (`oppointeraction`), which carries noise-control
 ///     and per-bud battery. The latter only exists while the former is up.
 @Observable
-final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
+final class Buds: NSObject {
 
     /// Raw protocol logging, off unless asked for — the buds push status every few seconds.
     static let isTracing = ProcessInfo.processInfo.environment["BUDSBAR_TRACE"] != nil
-
-    /// SDP service UUID for OPPO/realme's `oppointeraction` control service.
-    /// realme is an OPPO sub-brand and shares the protocol.
-    private static let controlServiceUUID: [UInt8] = [
-        0x00, 0x00, 0x07, 0x9a, 0xd1, 0x02, 0x11, 0xe1,
-        0x9b, 0x23, 0x00, 0x02, 0x5b, 0x00, 0xa5, 0xa5,
-    ]
 
     // MARK: - Published state
 
@@ -46,8 +39,20 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
     /// Set while a connect/disconnect is in flight so the toggle can't be double-fired.
     var isBusy = false
     var lastError: String?
-    /// Whether macOS will launch this app when the user logs in.
-    private(set) var launchesAtLogin = false
+    private let settings = AppSettings()
+    var launchesAtLogin: Bool { settings.launchesAtLogin }
+
+    struct DeviceOption: Identifiable, Equatable {
+        let id: String
+        let name: String
+        let isAdapted: Bool
+    }
+
+    private(set) var availableDevices: [DeviceOption] = []
+    var selectedDeviceAddress: String? { device?.addressString.map(Self.normalizedAddress) }
+    var isDeviceSelectionLocked: Bool {
+        ProcessInfo.processInfo.environment["BUDSBAR_ADDRESS"] != nil
+    }
 
     /// Set when the power toggle was used to switch the buds off.
     ///
@@ -91,17 +96,22 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
     /// False when no paired device speaks the control protocol — nothing to drive.
     var isPaired: Bool { device != nil }
 
+    /// More than one compatible device exists, but none has been chosen or remembered yet.
+    /// The status item remains available so the panel can present the picker.
+    var requiresDeviceSelection: Bool {
+        device == nil && availableDevices.count > 1 && !isDeviceSelectionLocked
+    }
+
+    var supportsNoiseControl: Bool {
+        protocolProfile.capabilities.contains(.noiseControl)
+    }
+
     /// Called whenever `isAvailable` or `isConnected` may have moved, so the status item can
     /// insert, remove, or recolour itself. A plain callback rather than observation: the
     /// owner is AppKit, not a SwiftUI view.
     var onStateChange: (() -> Void)?
 
-    struct Battery: Equatable {
-        var left: Int?
-        var right: Int?
-        var enclosure: Int?
-        var combined: Int?
-    }
+    typealias Battery = EarbudsBatteryState
 
     /// Where each bud is, as the buds report it. nil until they have said.
     ///
@@ -109,33 +119,17 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
     /// covers a gap in the battery report: a bud in the case drops out of it entirely rather
     /// than reporting as unknown, and an absent slot deliberately keeps its last value — so
     /// without placement the panel showed a frozen percentage for a bud that was put away.
-    struct Placement {
-        var left: BudsProtocol.BudPlacement?
-        var right: BudsProtocol.BudPlacement?
-
-        subscript(slot: BudsProtocol.BatterySlot) -> BudsProtocol.BudPlacement? {
-            get { slot == .left ? left : slot == .right ? right : nil }
-            set {
-                switch slot {
-                case .left: left = newValue
-                case .right: right = newValue
-                case .enclosure: break   // the case is not a bud and has no placement
-                }
-            }
-        }
-    }
+    typealias Placement = EarbudsPlacementState
 
     // MARK: - Private
 
     private var device: IOBluetoothDevice?
     /// Selected from the advertised model name. The frame format is shared, but Air5 Pro's
     /// mode values and reported value width differ from T500 Pro's.
-    private var protocolProfile: BudsProtocol.Profile = .t500Pro
-    private var channel: IOBluetoothRFCOMMChannel?
-    private var rxBuffer: [UInt8] = []
+    private var protocolProfile: BudsProtocol.Profile = .unknown
+    private var controlTransport: RFCOMMTransport?
+    private var earbudsSession: EarbudsSession?
     private var disconnectObserver: IOBluetoothUserNotification?
-    /// True while `openControlChannel` has work in flight. See the note there.
-    private var isOpening = false
 
     /// Until when the link is taken as up on the strength of a positive event, whatever the
     /// `isConnected()` query says. The query lags several seconds behind an openConnection
@@ -169,11 +163,17 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
     }
     private var pollTimer: Timer?
     private var ticks = 0
+    /// Aggregate value read through macOS's accessory-power service. Kept separate so the
+    /// two-second IOBluetooth poll cannot erase it with the same stale empty wrapper that
+    /// made the fallback necessary.
+    private var accessoryBattery: Int?
+    private var isAccessoryBatteryRequestInFlight = false
+    private var lastAccessoryBatteryRequestAt = Date.distantPast
 
     override init() {
         super.init()
-        launchesAtLogin = Self.readLaunchAtLoginState()
-        device = Self.discoverDevice()
+        refreshPairedDevices()
+        device = selectedDeviceCandidate()
         protocolProfile = BudsProtocol.Profile.forDeviceName(device?.name)
         syncName()
 
@@ -205,30 +205,11 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
     /// Refreshes the value in case the user changed the login-item permission in System
     /// Settings while the panel was closed.
     func refreshLaunchAtLoginState() {
-        launchesAtLogin = Self.readLaunchAtLoginState()
+        settings.refreshLaunchAtLogin()
     }
 
     func setLaunchAtLogin(_ enabled: Bool) {
-        do {
-            if enabled {
-                try SMAppService.mainApp.register()
-            } else {
-                try SMAppService.mainApp.unregister()
-            }
-            launchesAtLogin = Self.readLaunchAtLoginState()
-            if enabled && !launchesAtLogin {
-                lastError = "请在系统设置 > 通用 > 登录项中允许耳机控制启动。"
-            } else {
-                lastError = nil
-            }
-        } catch {
-            launchesAtLogin = Self.readLaunchAtLoginState()
-            lastError = "开机自动启动设置失败：\(error.localizedDescription)"
-        }
-    }
-
-    private static func readLaunchAtLoginState() -> Bool {
-        SMAppService.mainApp.status == .enabled
+        lastError = settings.setLaunchAtLogin(enabled)
     }
 
     /// How often the link state is re-read. `isConnected()` is a local lookup, not a radio
@@ -243,8 +224,10 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
 
     private func attemptAutoConnect() {
         // Pairing can happen while we are running, so keep looking until something turns up.
+        refreshPairedDevices()
         if device == nil {
-            device = Self.discoverDevice()
+            device = selectedDeviceCandidate()
+            protocolProfile = BudsProtocol.Profile.forDeviceName(device?.name)
             if device != nil { hasReadDisplayName = false }
         }
         guard !isConnected, !isSwitchedOff, !isBusy else { return }
@@ -256,16 +239,57 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
     /// Matching on the service rather than on a hardcoded address means any earbuds
     /// speaking this protocol work, and no one's Bluetooth address ends up in the source.
     /// `BUDSBAR_ADDRESS` forces a specific one when several are paired.
-    private static func discoverDevice() -> IOBluetoothDevice? {
-        if let forced = ProcessInfo.processInfo.environment["BUDSBAR_ADDRESS"] {
-            return IOBluetoothDevice(addressString: forced)
+    private func selectedDeviceCandidate() -> IOBluetoothDevice? {
+        BluetoothDeviceDiscovery.select(
+            forcedAddress: ProcessInfo.processInfo.environment["BUDSBAR_ADDRESS"],
+            preferredAddress: settings.preferredDeviceAddress)
+    }
+
+    func selectDevice(address: String) {
+        guard !isDeviceSelectionLocked, !isBusy else { return }
+        let wanted = Self.normalizedAddress(address)
+        guard wanted != selectedDeviceAddress,
+              let next = BluetoothDeviceDiscovery.pairedOPODevices().first(where: {
+                  Self.normalizedAddress($0.addressString ?? "") == wanted
+              })
+        else { return }
+
+        closeControlChannel()
+        disconnectObserver?.unregister()
+        disconnectObserver = nil
+        device = next
+        settings.preferredDeviceAddress = wanted
+        protocolProfile = BudsProtocol.Profile.forDeviceName(next.name)
+        name = next.name ?? Self.fallbackName
+        hasReadDisplayName = false
+        isConnected = false
+        isSwitchedOff = false
+        didFailUserConnect = false
+        linkAssertedUntil = .distantPast
+        lastFrameAt = .distantPast
+        battery = Battery()
+        systemBattery = Battery()
+        accessoryBattery = nil
+        lastAccessoryBatteryRequestAt = .distantPast
+        placement = Placement()
+        mode = nil
+        ancLevel = nil
+        refreshConnectionState()
+    }
+
+    private func refreshPairedDevices() {
+        availableDevices = BluetoothDeviceDiscovery.pairedOPODevices().compactMap { device in
+            guard let address = device.addressString else { return nil }
+            let profile = BudsProtocol.Profile.forDeviceName(device.name)
+            return DeviceOption(
+                id: Self.normalizedAddress(address),
+                name: device.name ?? Self.fallbackName,
+                isAdapted: profile != .unknown)
         }
-        guard let paired = IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice] else {
-            return nil
-        }
-        let uuid = IOBluetoothSDPUUID(bytes: controlServiceUUID, length: 16)
-        // Relies on the SDP records cached at pairing time; nothing is paged here.
-        return paired.first { $0.getServiceRecord(for: uuid) != nil }
+    }
+
+    private static func normalizedAddress(_ value: String) -> String {
+        DeviceSelectionPolicy.normalizedAddress(value)
     }
 
     /// Called at app termination. Releasing the RFCOMM channel matters: macOS grants one
@@ -332,7 +356,7 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
         didFailUserConnect = false
         onStateChange?()
         isBusy = true
-        closeControlChannel()
+        closeControlChannel(intent: .disconnectedByUser)
         DispatchQueue.global(qos: .userInitiated).async {
             let result = device.closeConnection()
             DispatchQueue.main.async {
@@ -471,10 +495,8 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
                 || (device?.isConnected() ?? false)
                 || Date() < linkAssertedUntil)
         if connected != isConnected {
-            FileHandle.standardError.write(Data((
-                "LINK connected=\(connected) stream=\(isStreamLive) "
-                + "channel=\(isControlChannelOpen) "
-                + "available=\(connected || isSwitchedOff)\n").utf8))
+            AppLogger.bluetooth.debug(
+                "Link changed connected=\(connected) stream=\(self.isStreamLive) channel=\(self.isControlChannelOpen) available=\(connected || self.isSwitchedOff)")
         }
         isConnected = connected
         // `isSwitchedOff` is deliberately not touched here. It is user intent, and this
@@ -500,6 +522,8 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
             // are immediately re-reported when either bud is active again.
             battery = Battery(left: nil, right: nil, enclosure: battery.enclosure, combined: nil)
             systemBattery = Battery()
+            accessoryBattery = nil
+            lastAccessoryBatteryRequestAt = .distantPast
             placement = Placement()
             mode = nil
             ancLevel = nil
@@ -527,232 +551,164 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
     /// sources have different lifetimes: a vendor frame can identify a bud's placement,
     /// while the system audio link may only expose one aggregate percentage.
     private func refreshSystemBattery() {
-        guard let device else { return }
+        guard let device, let address = device.addressString else { return }
+        // IOBluetooth wrappers can keep stale battery indicators across both a normal
+        // reconnect and a Bluetooth power cycle. Always read a current paired-device
+        // snapshot; this method already runs on the existing two-second connected poll.
+        let source = BluetoothDeviceDiscovery.pairedDeviceSnapshot(address: address) ?? device
 
-        let next = Battery(
-            left: Self.systemBatteryValue(device, key: "batteryPercentLeft"),
-            right: Self.systemBatteryValue(device, key: "batteryPercentRight"),
-            enclosure: Self.systemBatteryValue(device, key: "batteryPercentCase"),
-            combined: Self.systemBatteryValue(device, key: "batteryPercentCombined")
-                ?? Self.systemBatteryValue(device, key: "batteryPercentSingle")
+        var next = Battery(
+            left: Self.systemBatteryValue(source, key: "batteryPercentLeft"),
+            right: Self.systemBatteryValue(source, key: "batteryPercentRight"),
+            enclosure: Self.systemBatteryValue(source, key: "batteryPercentCase"),
+            combined: Self.systemBatteryValue(source, key: "batteryPercentCombined")
+                ?? Self.systemBatteryValue(source, key: "batteryPercentSingle")
         )
-        guard next != systemBattery else { return }
 
-        systemBattery = next
-        if Self.isTracing {
-            let value = next.combined.map(String.init) ?? "unknown"
-            FileHandle.standardError.write(Data("SYSTEM BATTERY combined=\(value)\n".utf8))
+        let runtimeHasHeadsetBattery = next.left != nil || next.right != nil
+            || next.combined != nil
+        if runtimeHasHeadsetBattery {
+            accessoryBattery = nil
+        } else {
+            next.combined = accessoryBattery
+        }
+
+        if next != systemBattery {
+            systemBattery = next
+            if Self.isTracing {
+                let value = next.combined.map(String.init) ?? "unknown"
+                AppLogger.bluetooth.debug("System battery combined=\(value, privacy: .public)")
+            }
+        }
+
+        let vendorHasHeadsetBattery = battery.left != nil || battery.right != nil
+            || battery.combined != nil
+        if !runtimeHasHeadsetBattery, !vendorHasHeadsetBattery {
+            requestAccessoryBatteryIfNeeded(
+                deviceName: device.name ?? name,
+                address: Self.normalizedAddress(address))
+        }
+    }
+
+    /// `pmset` is a subprocess, so it is used only when both normal battery sources are
+    /// empty and no more than once per interval. The result is aggregate by definition and
+    /// is therefore assigned only to `combined`, never copied into left and right.
+    private static let accessoryBatteryRefreshInterval: TimeInterval = 10
+
+    private func requestAccessoryBatteryIfNeeded(deviceName: String, address: String) {
+        guard !isAccessoryBatteryRequestInFlight,
+              Date().timeIntervalSince(lastAccessoryBatteryRequestAt)
+                  >= Self.accessoryBatteryRefreshInterval
+        else { return }
+
+        isAccessoryBatteryRequestInFlight = true
+        lastAccessoryBatteryRequestAt = Date()
+        DispatchQueue.global(qos: .utility).async {
+            let value = SystemAccessoryBatteryReader.read(deviceName: deviceName)
+            DispatchQueue.main.async {
+                self.isAccessoryBatteryRequestInFlight = false
+                guard self.isConnected, self.selectedDeviceAddress == address else { return }
+                self.accessoryBattery = value
+                // Compose the fresh aggregate with any case value immediately; do not make
+                // the user wait for the next two-second UI poll.
+                self.refreshSystemBattery()
+                self.onStateChange?()
+            }
         }
     }
 
     // MARK: - Vendor control channel
 
     private func openControlChannel() {
-        // `channel` is not assigned until the async work below finishes, so it cannot on its
-        // own tell a second caller that an open is already under way. Without `isOpening`,
-        // reopening the panel during those few seconds starts a competing SDP query and a
-        // second openRFCOMMChannelAsync, which collide — and every command sent meanwhile is
-        // dropped by `send`, which reads as the whole app lagging.
-        guard channel == nil, !isOpening, let device else { return }
-        isOpening = true
-
-        DispatchQueue.global(qos: .userInitiated).async {
-            // SDP-resolve the channel rather than hardcoding 15, so a firmware
-            // renumber can't silently point us at a different service. The query has to run
-            // in this process at least once or the channel open never completes.
-            device.performSDPQuery(nil)
-
-            // Poll instead of sleeping a flat two seconds: the record usually resolves in
-            // well under that, and the wait used to be paid in full on every connect.
-            let uuid = IOBluetoothSDPUUID(bytes: Self.controlServiceUUID, length: 16)
-            var record: IOBluetoothSDPServiceRecord?
-            for _ in 0..<40 {
-                record = device.getServiceRecord(for: uuid)
-                if record != nil { break }
-                Thread.sleep(forTimeInterval: 0.05)
+        if let earbudsSession {
+            switch earbudsSession.connectionState {
+            case .idle, .failed:
+                earbudsSession.open(intent: isAutoConnecting ? .automatic : .connected)
+            default:
+                break
             }
-
-            var channelID: BluetoothRFCOMMChannelID = 0
-            guard let record else {
-                DispatchQueue.main.async {
-                    self.isOpening = false
-                    self.lastError = "未找到耳机控制服务"
-                }
-                return
-            }
-            guard record.getRFCOMMChannelID(&channelID) == kIOReturnSuccess else {
-                DispatchQueue.main.async {
-                    self.isOpening = false
-                    self.lastError = "耳机控制通道不可用"
-                }
-                return
-            }
-
-            DispatchQueue.main.async {
-                defer { self.isOpening = false }
-                var opened: IOBluetoothRFCOMMChannel?
-                let result = device.openRFCOMMChannelAsync(
-                    &opened, withChannelID: channelID, delegate: self)
-                if result == kIOReturnSuccess {
-                    self.channel = opened
-                } else {
-                    // Most likely another host already holds the control channel.
-                    self.lastError = "控制通道忙（\(Self.describe(result))）"
-                }
-            }
+            return
         }
+
+        guard let device else { return }
+        let transport = RFCOMMTransport(device: device, tracing: Self.isTracing)
+        var initialState = EarbudsState()
+        initialState.battery = battery
+        initialState.placement = placement
+        initialState.mode = mode
+        initialState.ancLevel = ancLevel
+        let session = EarbudsSession(
+            profile: protocolProfile, transport: transport, initialState: initialState)
+        session.onActivity = { [weak self] in self?.controlChannelBecameActive() }
+        session.onStateChange = { [weak self] in self?.syncSessionState() }
+        controlTransport = transport
+        earbudsSession = session
+        session.open(intent: isAutoConnecting ? .automatic : .connected)
     }
 
-    private func closeControlChannel() {
-        channel?.close()
-        channel = nil
-        rxBuffer.removeAll()
+    private func closeControlChannel(intent: ConnectionIntent = .automatic) {
+        earbudsSession?.close(intent: intent)
+        earbudsSession = nil
+        controlTransport = nil
         isControlChannelOpen = false
+    }
+
+    private func controlChannelBecameActive() {
+        guard !isSwitchedOff else {
+            closeControlChannel(intent: .disconnectedByUser)
+            return
+        }
+        lastFrameAt = Date()
+        assertLinkUp()
+    }
+
+    private func syncSessionState() {
+        guard let earbudsSession else { return }
+        isControlChannelOpen = earbudsSession.connectionState == .ready
+
+        let next = earbudsSession.state
+        battery = next.battery
+        placement = next.placement
+        mode = next.mode
+        ancLevel = next.ancLevel
+
+        if case .failed(let error) = earbudsSession.connectionState {
+            lastError = error.message
+            AppLogger.session.error("Session failed: \(error.message, privacy: .public)")
+        } else if isControlChannelOpen {
+            lastError = nil
+            if ProcessInfo.processInfo.environment["BUDSBAR_TEST"] != nil,
+               testTimer == nil, testQueue.isEmpty {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) { self.startModeTest() }
+            }
+        }
+        onStateChange?()
     }
 
     // MARK: - Noise control
 
     func set(mode requested: NoiseMode) {
-        // T500 uses the remembered ANC level for the top-level ANC button. Air5 Pro's phone
-        // sends a distinct generic 0x02 command there, so leave the level unspecified for
-        // that profile and let the buds report the resulting state.
-        let level = protocolProfile == .t500Pro ? ancLevel : nil
         // Deliberately not updating `mode` here. The buds echo a state notification
         // once they have actually switched, and that echo is what the UI renders —
         // it is also what keeps this panel and realme Link on the phone in agreement.
-        send(BudsProtocol.encodeSetNoiseMode(requested, level: level, profile: protocolProfile))
+        guard supportsNoiseControl else {
+            lastError = "此耳机型号尚未适配降噪控制"
+            return
+        }
+        if earbudsSession?.set(mode: requested, rememberedLevel: ancLevel) != true {
+            lastError = "控制通道尚未就绪"
+        }
     }
 
     /// Same contract as `set(mode:)` — the level shown is the level the buds reported, not
     /// the one that was asked for, so the panel and realme Link cannot drift apart.
     func set(ancLevel requested: ANCLevel) {
-        send(BudsProtocol.encodeSetNoiseMode(.noiseCancellation, level: requested,
-                                             profile: protocolProfile))
-    }
-
-    @discardableResult
-    private func send(_ packet: [UInt8]) -> Bool {
-        guard let channel, isControlChannelOpen else { return false }
-        var bytes = packet
-        let result = bytes.withUnsafeMutableBytes { raw in
-            channel.writeAsync(raw.baseAddress, length: UInt16(raw.count), refcon: nil)
-        }
-        if result != kIOReturnSuccess {
-            lastError = "写入失败：\(Self.describe(result))"
-            return false
-        }
-        return true
-    }
-
-    // MARK: - IOBluetoothRFCOMMChannelDelegate
-
-    func rfcommChannelOpenComplete(_ channel: IOBluetoothRFCOMMChannel!, status error: IOReturn) {
-        guard error == kIOReturnSuccess else {
-            lastError = "打开控制通道失败：\(Self.describe(error))"
-            self.channel = nil
+        guard supportsNoiseControl else {
+            lastError = "此耳机型号尚未适配降噪控制"
             return
         }
-        isControlChannelOpen = true
-        lastError = nil
-        if ProcessInfo.processInfo.environment["BUDSBAR_TEST"] != nil {
-            // Give the handshake sent below time to land first.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { self.startModeTest() }
-        }
-        for packet in BudsProtocol.handshake() {
-            var bytes = packet
-            _ = bytes.withUnsafeMutableBytes { raw in
-                channel.writeAsync(raw.baseAddress, length: UInt16(raw.count), refcon: nil)
-            }
-        }
-    }
-
-    func rfcommChannelData(_ channel: IOBluetoothRFCOMMChannel!, data dataPointer: UnsafeMutableRawPointer!, length dataLength: Int) {
-        let chunk = Array(UnsafeBufferPointer(
-            start: dataPointer.assumingMemoryBound(to: UInt8.self), count: dataLength))
-
-        // The buds go on talking for a while after a switch-off, and acting on that would
-        // walk the app back to connected against the user's wishes. Drop it on the floor,
-        // buffer included, so nothing is half-parsed when the toggle comes back on.
-        guard !isSwitchedOff else {
-            rxBuffer.removeAll()
-            return
-        }
-
-        // Data is the proof the channel is alive, whatever the link bookkeeping believes. A
-        // spurious deviceDidDisconnect tears the channel down on paper while the real one
-        // keeps delivering; without this the app sat deaf behind that teardown, showing
-        // Disconnected and a dead noise-control card while battery reports rolled in.
-        lastFrameAt = Date()
-        if !isControlChannelOpen {
-            isControlChannelOpen = true
-            self.channel = channel
-            refreshConnectionState()
-        }
-
-        rxBuffer.append(contentsOf: chunk)
-        // Raw trace, for decoding the payloads that are still unknown. Opt-in: the buds
-        // push status every few seconds, so a shipped build would spew continuously.
-        if Self.isTracing {
-            FileHandle.standardError.write(Data("RX \(BudsProtocol.hex(chunk))\n".utf8))
-        }
-
-        // RFCOMM delivers arbitrary chunks; frames split across callbacks.
-        let frames = BudsProtocol.drainFrames(from: &rxBuffer)
-        for frame in frames { apply(frame) }
-    }
-
-    func rfcommChannelClosed(_ channel: IOBluetoothRFCOMMChannel!) {
-        closeControlChannel()
-    }
-
-    private func apply(_ frame: BudsProtocol.Frame) {
-        for update in BudsProtocol.interpret(frame, profile: protocolProfile) {
-            switch update {
-            case .noiseMode(let value):
-                if mode != value {
-                    // The level is logged separately because it is part of the mode report.
-                    FileHandle.standardError.write(Data("MODE reported \(value.label)\n".utf8))
-                }
-                mode = value
-            case .ancLevel(let value):
-                if ancLevel != value {
-                    FileHandle.standardError.write(
-                        Data("LEVEL reported \(value?.label ?? "unknown")\n".utf8))
-                }
-                ancLevel = value
-            case .battery(let slot, let level):
-                // Assigned, not merged: nil here means the buds reported the slot as
-                // unknown, and a slot they did not mention produces no update at all.
-                if Self.isTracing {
-                    let description = level.map(String.init) ?? "unknown"
-                    FileHandle.standardError.write(
-                        Data("BATTERY \(slot) \(description)\n".utf8))
-                }
-                switch slot {
-                case .left: battery.left = level
-                case .right: battery.right = level
-                case .enclosure: battery.enclosure = level
-                }
-
-            case .placement(let slot, let where_):
-                guard placement[slot] != where_ else { break }
-                FileHandle.standardError.write(Data("PLACEMENT \(slot) \(where_)\n".utf8))
-                placement[slot] = where_
-                // Only on the move into the case, not on every report of it. A bud put away
-                // drops out of the battery report entirely, and an absent slot keeps its last
-                // reading — so the reading it had while in use would stand on the panel
-                // indefinitely. Clearing it once is enough: an awake case goes on reporting
-                // the bud inside it, and the next report fills the value back in within
-                // seconds. A case that has gone to sleep reports nothing, which is when the
-                // stale number used to sit there, and now the cell honestly reads unknown.
-                if where_ == .inCase {
-                    switch slot {
-                    case .left: battery.left = nil
-                    case .right: battery.right = nil
-                    case .enclosure: break
-                    }
-                }
-            }
+        if earbudsSession?.set(ancLevel: requested) != true {
+            lastError = "控制通道尚未就绪"
         }
     }
 
@@ -766,7 +722,7 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
     private func startModeTest() {
         guard isControlChannelOpen else { return }
         testQueue = ANCLevel.allCases.map { level in
-            ("ANC \(level.label), value \(self.protocolProfile.wire(for: level))",
+            ("ANC \(level.label), value \(self.protocolProfile.wire(for: level).map(String.init) ?? "unsupported")",
              { [weak self] in self?.set(ancLevel: level) })
         } + [
             ("Transparency", { [weak self] in self?.set(mode: .transparency) }),
@@ -788,7 +744,7 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
     }
 
     private func testLog(_ message: String) {
-        FileHandle.standardError.write(Data("TEST \(message)\n".utf8))
+        AppLogger.diagnostics.notice("Mode test: \(message, privacy: .public)")
     }
 
     // MARK: - Errors

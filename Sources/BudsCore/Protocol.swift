@@ -1,13 +1,13 @@
 import Foundation
 
-enum NoiseMode: String, CaseIterable, Identifiable {
+public enum NoiseMode: String, CaseIterable, Identifiable {
     case noiseCancellation
     case off
     case transparency
 
-    var id: String { rawValue }
+    public var id: String { rawValue }
 
-    var label: String {
+    public var label: String {
         switch self {
         case .noiseCancellation: return "降噪"
         case .off: return "关闭"
@@ -15,7 +15,7 @@ enum NoiseMode: String, CaseIterable, Identifiable {
         }
     }
 
-    var symbol: String {
+    public var symbol: String {
         switch self {
         case .noiseCancellation: return "person.crop.circle"
         case .off: return "person.crop.circle.fill"
@@ -28,15 +28,15 @@ enum NoiseMode: String, CaseIterable, Identifiable {
 /// offers a fourth, Smart, which picks a level for you.
 /// Declared strongest-first, matching realme Link's own order — `allCases` is what the
 /// picker renders, and it is deliberately not the wire order.
-enum ANCLevel: String, CaseIterable, Identifiable {
+public enum ANCLevel: String, CaseIterable, Identifiable {
     case max
     case moderate
     case mild
     case smart
 
-    var id: String { rawValue }
+    public var id: String { rawValue }
 
-    var label: String {
+    public var label: String {
         switch self {
         case .mild: return "轻度"
         case .moderate: return "中度"
@@ -45,7 +45,7 @@ enum ANCLevel: String, CaseIterable, Identifiable {
         }
     }
 
-    var detail: String {
+    public var detail: String {
         switch self {
         case .mild: return "适合家庭和办公室等安静场所"
         case .moderate: return "适合街道和商场等嘈杂场所"
@@ -66,99 +66,20 @@ enum ANCLevel: String, CaseIterable, Identifiable {
 /// trailing checksum — the length accounts for the payload exactly.
 ///
 /// The payload is a tagged list: `<type> <count>` followed by `count` (id, value) pairs.
-enum BudsProtocol {
+public enum BudsProtocol {
 
-    static let sync: UInt8 = 0xaa
+    public static let sync: UInt8 = 0xaa
     /// The only opcode observed: an unsolicited device status report.
-    static let opcodeStatusReport: UInt16 = 0x0402
+    public static let opcodeStatusReport: UInt16 = 0x0402
 
-    /// OPOv1's frame layout is shared, but the mode values are not. Keep the two mappings
-    /// explicit: the original project was verified on T500 Pro, while the Air5 Pro values
-    /// below come from the phone capture made for this adaptation.
-    enum Profile: String, Equatable {
-        case t500Pro
-        case encoAir5Pro
-
-        static func forDeviceName(_ name: String?) -> Self {
-            let normalized = (name ?? "").lowercased().replacingOccurrences(of: " ", with: "")
-            return normalized.contains("air5") ? .encoAir5Pro : .t500Pro
-        }
-
-        func commandValue(for mode: NoiseMode, level: ANCLevel?) -> UInt8 {
-            switch self {
-            case .t500Pro:
-                switch mode {
-                case .off: return 0x01
-                case .transparency: return 0x02
-                case .noiseCancellation: return self.wire(for: level ?? .max)
-                }
-            case .encoAir5Pro:
-                switch mode {
-                case .off: return 0x01
-                case .transparency: return 0x04
-                // The phone uses 02 to enter ANC and separate values for its four levels.
-                case .noiseCancellation: return level.map { self.wire(for: $0) } ?? 0x02
-                }
-            }
-        }
-
-        func wire(for level: ANCLevel) -> UInt8 {
-            switch self {
-            case .t500Pro:
-                switch level {
-                case .mild: return 0x04
-                case .max: return 0x08
-                case .moderate: return 0x10
-                case .smart: return 0x20
-                }
-            case .encoAir5Pro:
-                switch level {
-                case .max: return 0x10
-                case .moderate: return 0x20
-                case .mild: return 0x40
-                case .smart: return 0x80
-                }
-            }
-        }
-
-        /// Returns the semantic mode and, for ANC, the selected strength. Air5 Pro reports
-        /// this field as a little-endian UInt16; T500 Pro reports one byte.
-        func decodeNoiseMode(_ value: UInt16) -> (mode: NoiseMode, level: ANCLevel?)? {
-            switch self {
-            case .t500Pro:
-                switch value {
-                case 0x01: return (.off, nil)
-                case 0x02: return (.transparency, nil)
-                case 0x04: return (.noiseCancellation, .mild)
-                case 0x08: return (.noiseCancellation, .max)
-                case 0x10: return (.noiseCancellation, .moderate)
-                case 0x20: return (.noiseCancellation, .smart)
-                default: return nil
-                }
-            case .encoAir5Pro:
-                switch value {
-                case 0x0008: return (.off, nil)
-                case 0x0100: return (.transparency, nil)
-                case 0x0010: return (.noiseCancellation, .max)
-                case 0x0020: return (.noiseCancellation, .moderate)
-                case 0x0040: return (.noiseCancellation, .mild)
-                case 0x0080: return (.noiseCancellation, .smart)
-                default: return nil
-                }
-            }
-        }
-
-        var modeValueBytes: Int { self == .encoAir5Pro ? 2 : 1 }
+    public struct Frame {
+        public var opcode: UInt16
+        public var sequence: UInt8
+        public var payload: [UInt8]
+        public var raw: [UInt8]
     }
 
-    struct Frame {
-        var opcode: UInt16
-        var sequence: UInt8
-        var payload: [UInt8]
-        var raw: [UInt8]
-    }
-
-    enum Update: Equatable {
+    public enum Update: Equatable {
         case noiseMode(NoiseMode)
         /// nil means noise cancellation is on but the profile does not recognise the level.
         /// Only reported alongside a `.noiseMode(.noiseCancellation)`, so the last known
@@ -175,7 +96,7 @@ enum BudsProtocol {
         case placement(BatterySlot, BudPlacement)
     }
 
-    enum BatterySlot: UInt8 {
+    public enum BatterySlot: UInt8 {
         case left = 0x01
         case right = 0x02
         case enclosure = 0x03
@@ -193,7 +114,7 @@ enum BudsProtocol {
     /// Only the two values above are known. A bud out of the case but not in an ear may well
     /// report a third, so an unrecognised value means "no idea" and the UI leaves the cell
     /// alone rather than guessing it into one of these.
-    enum BudPlacement: UInt8 {
+    public enum BudPlacement: UInt8 {
         case inCase = 0x00
         case inUse = 0x03
     }
@@ -213,10 +134,6 @@ enum BudsProtocol {
     private static let noiseModeID: UInt8 = 0x01
 
     // MARK: - Sending
-
-    /// Packets to send once the channel opens. Status arrives unprompted, but OPOv1
-    /// expects a hello before it will accept commands.
-    static func handshake() -> [[UInt8]] { [encodeHello()] }
 
     /// Builds a frame, filling in both length fields.
     static func makeFrame(_ b2: UInt8, _ b3: UInt8, _ b4: UInt8, _ b5: UInt8,
@@ -239,40 +156,16 @@ enum BudsProtocol {
     }
 
     /// Subcommands within a category.
-    private enum Subcommand: UInt8 {
+    enum Subcommand: UInt8 {
         case hello = 0x01
         case setNoiseMode = 0x04
-    }
-
-    /// `level` is only supplied when the caller picked an explicit ANC strength. A nil
-    /// level uses the profile's generic ANC command (Air5 Pro: 0x02) or its default level
-    /// (T500 Pro: Max).
-    static func encodeSetNoiseMode(_ mode: NoiseMode, level: ANCLevel? = nil,
-                                   profile: Profile = .t500Pro) -> [UInt8] {
-        let value = profile.commandValue(for: mode, level: level)
-        return makeFrame(0x00, 0x00, Category.status.rawValue, Subcommand.setNoiseMode.rawValue,
-                         sequence: nextSequence(),
-                         payload: [0x01, 0x01, value])
-    }
-
-    /// Session opener. The buds answer it, and OPOv1 wants it before commands.
-    static func encodeHello() -> [UInt8] {
-        makeFrame(0x00, 0x00, Category.system.rawValue, Subcommand.hello.rawValue,
-                  sequence: nextSequence(), payload: [])
-    }
-
-    private static var sequenceCounter: UInt8 = 0
-
-    static func nextSequence() -> UInt8 {
-        sequenceCounter &+= 1
-        return sequenceCounter
     }
 
     // MARK: - Receiving
 
     /// Pulls every complete frame out of `buffer`, leaving any partial tail behind.
     /// RFCOMM delivers arbitrary chunks, so frames both split and coalesce.
-    static func drainFrames(from buffer: inout [UInt8]) -> [Frame] {
+    public static func drainFrames(from buffer: inout [UInt8]) -> [Frame] {
         var frames: [Frame] = []
 
         while true {
@@ -310,7 +203,7 @@ enum BudsProtocol {
         return frames
     }
 
-    static func interpret(_ frame: Frame, profile: Profile = .t500Pro) -> [Update] {
+    public static func interpret(_ frame: Frame, profile: Profile = .t500Pro) -> [Update] {
         guard frame.opcode == opcodeStatusReport else { return [] }
 
         let payload = frame.payload
@@ -366,14 +259,14 @@ enum BudsProtocol {
         }
     }
 
-    static func hex(_ bytes: [UInt8]) -> String {
+    public static func hex(_ bytes: [UInt8]) -> String {
         bytes.map { String(format: "%02x", $0) }.joined(separator: " ")
     }
 
     // MARK: - Self check
 
     /// Replays real captured frames. Runs at launch in debug builds.
-    static func selfCheck() {
+    public static func selfCheck() {
         func bytes(_ string: String) -> [UInt8] {
             string.split(separator: " ").compactMap { UInt8($0, radix: 16) }
         }
@@ -466,7 +359,8 @@ enum BudsProtocol {
 
         // The frame we send to set a mode must be well formed, carry the set opcode
         // rather than the report opcode, and put the right value in the payload.
-        var sent = encodeSetNoiseMode(.transparency)
+        var encoder = OPOPacketEncoder()
+        var sent = encoder.encodeSetNoiseMode(.transparency, profile: .t500Pro)!
         assert(sent == bytes("aa 0a 00 00 04 04 \(String(format: "%02x", sent[6])) 03 00 01 01 02"),
                "set frame layout: \(hex(sent))")
         frames = drainFrames(from: &sent)
@@ -476,16 +370,21 @@ enum BudsProtocol {
 
         // Commanding a level puts that level's byte in the mode field, and a level is
         // ignored for the modes that do not have one.
-        assert(encodeSetNoiseMode(.noiseCancellation, level: .moderate).last == 0x10, "T500 set Moderate")
-        assert(encodeSetNoiseMode(.noiseCancellation, level: .mild).last == 0x04, "T500 set Mild")
-        assert(encodeSetNoiseMode(.noiseCancellation).last == Profile.t500Pro.wire(for: .max),
+        assert(encoder.encodeSetNoiseMode(.noiseCancellation, level: .moderate,
+                                          profile: .t500Pro)?.last == 0x10, "T500 set Moderate")
+        assert(encoder.encodeSetNoiseMode(.noiseCancellation, level: .mild,
+                                          profile: .t500Pro)?.last == 0x04, "T500 set Mild")
+        assert(encoder.encodeSetNoiseMode(.noiseCancellation,
+                                          profile: .t500Pro)?.last == Profile.t500Pro.wire(for: .max),
                "T500 ANC defaults to Max")
-        assert(encodeSetNoiseMode(.off, level: .mild).last == 0x01,
+        assert(encoder.encodeSetNoiseMode(.off, level: .mild,
+                                          profile: .t500Pro)?.last == 0x01,
                "level does not leak into Off")
 
         // Every command we can send must round-trip back to the state it asked for.
         for level in ANCLevel.allCases {
-            var command = encodeSetNoiseMode(.noiseCancellation, level: level)
+            var command = encoder.encodeSetNoiseMode(.noiseCancellation, level: level,
+                                                     profile: .t500Pro)!
             let value = command.last!
             command = bytes("aa 0b 00 00 04 02 9b 04 00 03 01 01 \(String(format: "%02x", value))")
             frames = drainFrames(from: &command)
@@ -535,18 +434,18 @@ enum BudsProtocol {
         assert(interpret(frames[0], profile: air5).isEmpty,
                "Air5 Smart effective-level companion is ignored")
 
-        assert(encodeSetNoiseMode(.noiseCancellation, profile: air5).last == 0x02,
+        assert(encoder.encodeSetNoiseMode(.noiseCancellation, profile: air5)?.last == 0x02,
                "Air5 ANC entry command")
-        assert(encodeSetNoiseMode(.noiseCancellation, level: .max, profile: air5).last == 0x10,
+        assert(encoder.encodeSetNoiseMode(.noiseCancellation, level: .max, profile: air5)?.last == 0x10,
                "Air5 set Max")
-        assert(encodeSetNoiseMode(.noiseCancellation, level: .moderate, profile: air5).last == 0x20,
+        assert(encoder.encodeSetNoiseMode(.noiseCancellation, level: .moderate, profile: air5)?.last == 0x20,
                "Air5 set Moderate")
-        assert(encodeSetNoiseMode(.noiseCancellation, level: .mild, profile: air5).last == 0x40,
+        assert(encoder.encodeSetNoiseMode(.noiseCancellation, level: .mild, profile: air5)?.last == 0x40,
                "Air5 set Mild")
-        assert(encodeSetNoiseMode(.noiseCancellation, level: .smart, profile: air5).last == 0x80,
+        assert(encoder.encodeSetNoiseMode(.noiseCancellation, level: .smart, profile: air5)?.last == 0x80,
                "Air5 set Smart")
-        assert(encodeSetNoiseMode(.off, profile: air5).last == 0x01, "Air5 set Off")
-        assert(encodeSetNoiseMode(.transparency, profile: air5).last == 0x04,
+        assert(encoder.encodeSetNoiseMode(.off, profile: air5)?.last == 0x01, "Air5 set Off")
+        assert(encoder.encodeSetNoiseMode(.transparency, profile: air5)?.last == 0x04,
                "Air5 set Transparency")
 
         // Two frames arriving coalesced in one read.
