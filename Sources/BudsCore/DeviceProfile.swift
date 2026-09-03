@@ -29,11 +29,13 @@ public struct DeviceCapabilities: OptionSet, Equatable {
     public static let gameMode = Self(rawValue: 1 << 7)
 
     static let knownOPO: Self = [.battery, .placement, .noiseControl, .ancLevels]
+    static let free4OPO: Self = [.battery, .noiseControl, .ancLevels]
     static let unknownOPO: Self = [.battery, .placement]
 }
 
 public enum DeviceProfileRegistry {
     private static let air5Names: Set<String> = ["oppoencoair5pro", "encoair5pro"]
+    private static let free4Names: Set<String> = ["oppoencofree4", "encofree4"]
     private static let t500Names: Set<String> = [
         "realmebudst500pro", "realmet500pro", "budst500pro",
     ]
@@ -42,6 +44,7 @@ public enum DeviceProfileRegistry {
         let model = normalize(identity.modelIdentifier)
         let name = normalize(identity.advertisedName)
         if air5Names.contains(model) || air5Names.contains(name) { return .encoAir5Pro }
+        if free4Names.contains(model) || free4Names.contains(name) { return .encoFree4 }
         if t500Names.contains(model) || t500Names.contains(name) { return .t500Pro }
         return .unknown
     }
@@ -60,6 +63,7 @@ extension BudsProtocol {
     public enum Profile: String, Equatable {
         case t500Pro
         case encoAir5Pro
+        case encoFree4
         case unknown
 
         public static func forDeviceName(_ name: String?) -> Self {
@@ -73,6 +77,7 @@ extension BudsProtocol {
                 return [
                     .knownOPO, .activeBatteryQuery, .deviceInformation, .equalizer, .gameMode,
                 ]
+            case .encoFree4: return .free4OPO
             case .unknown: return .unknownOPO
             }
         }
@@ -89,6 +94,7 @@ extension BudsProtocol {
         public var modelIdentifier: String? {
             switch self {
             case .encoAir5Pro: return "OPPO Enco Air5 Pro"
+            case .encoFree4: return "OPPO Enco Free4"
             case .t500Pro: return "realme Buds T500 Pro"
             case .unknown: return nil
             }
@@ -102,7 +108,7 @@ extension BudsProtocol {
                 case .transparency: return 0x02
                 case .noiseCancellation: return wire(for: level ?? .max)
                 }
-            case .encoAir5Pro:
+            case .encoAir5Pro, .encoFree4:
                 switch mode {
                 case .off: return 0x01
                 case .transparency: return 0x04
@@ -122,7 +128,7 @@ extension BudsProtocol {
                 case .moderate: return 0x10
                 case .smart: return 0x20
                 }
-            case .encoAir5Pro:
+            case .encoAir5Pro, .encoFree4:
                 switch level {
                 case .max: return 0x10
                 case .moderate: return 0x20
@@ -146,7 +152,7 @@ extension BudsProtocol {
                 case 0x20: return (.noiseCancellation, .smart)
                 default: return nil
                 }
-            case .encoAir5Pro:
+            case .encoAir5Pro, .encoFree4:
                 switch value {
                 case 0x0008: return (.off, nil)
                 case 0x0100: return (.transparency, nil)
@@ -175,14 +181,14 @@ extension BudsProtocol {
                 case 0x05: return .inUse
                 default: return nil
                 }
-            case .unknown:
+            case .encoFree4, .unknown:
                 return nil
             }
         }
 
         public var modeValueBytes: Int {
             switch self {
-            case .encoAir5Pro: return 2
+            case .encoAir5Pro, .encoFree4: return 2
             case .t500Pro: return 1
             case .unknown: return 0
             }

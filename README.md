@@ -24,6 +24,7 @@
 ## 已验证的耳机
 
 - OPPO Enco Air5 Pro
+- OPPO Enco Free4
 - realme Buds T500 Pro
 
 其他真我、OPPO 或一加耳机也可以尝试连接；不同型号支持的功能可能有所不同。
