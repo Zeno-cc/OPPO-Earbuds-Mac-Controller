@@ -4,6 +4,8 @@ struct PanelView: View {
     @Bindable var buds: Buds
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var contrast
     @State private var headerHeight: CGFloat = 0
     @State private var errorHeight: CGFloat = 0
     @State private var contentHeight: CGFloat = 240
@@ -11,8 +13,8 @@ struct PanelView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             DeviceHeaderView(buds: buds)
-                .padding(.horizontal, PanelDesignTokens.spacing16)
-                .padding(.vertical, 14)
+                .padding(.horizontal, PanelDesignTokens.contentInset)
+                .padding(.vertical, PanelDesignTokens.headerVerticalInset)
                 .onGeometryChange(for: CGFloat.self) { proxy in
                     proxy.size.height
                 } action: { height in
@@ -21,7 +23,7 @@ struct PanelView: View {
 
             if let error = buds.lastError {
                 InlineErrorBanner(message: error, retry: retryCurrentState)
-                    .padding(.horizontal, PanelDesignTokens.spacing16)
+                .padding(.horizontal, PanelDesignTokens.contentInset)
                     .padding(.bottom, PanelDesignTokens.spacing12)
                     .onGeometryChange(for: CGFloat.self) { proxy in
                         proxy.size.height
@@ -31,13 +33,20 @@ struct PanelView: View {
             }
 
             Divider()
-                .opacity(PanelDesignTokens.dividerOpacity)
+                .opacity(
+                    contrast == .increased ? 0.28 : PanelDesignTokens.dividerOpacity)
 
             contentViewport
         }
         .frame(width: PanelDesignTokens.width)
         .frame(maxHeight: PanelDesignTokens.maximumHeight, alignment: .top)
-        .background(.ultraThinMaterial)
+        .background {
+            if reduceTransparency {
+                Color(nsColor: .windowBackgroundColor)
+            } else {
+                Rectangle().fill(.ultraThinMaterial)
+            }
+        }
         .clipped()
         .onAppear {
             buds.refreshConnectionState()
@@ -57,7 +66,7 @@ struct PanelView: View {
     private var contentViewport: some View {
         ScrollView(.vertical) {
             content
-                .padding(PanelDesignTokens.spacing16)
+                .padding(PanelDesignTokens.contentInset)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
                 .onGeometryChange(for: CGFloat.self) { proxy in
@@ -96,8 +105,10 @@ struct PanelView: View {
                     unsupportedDeviceNote
                 }
             }
+            .transition(contentTransition)
         } else {
             disconnectedNote
+                .transition(contentTransition)
         }
     }
 
@@ -152,7 +163,12 @@ struct PanelView: View {
     }
 
     private var stateAnimation: Animation? {
-        PanelDesignTokens.stateAnimation(reduceMotion: reduceMotion)
+        MotionTokens.state(reduceMotion: reduceMotion)
+    }
+
+    private var contentTransition: AnyTransition {
+        guard !reduceMotion else { return .opacity }
+        return .opacity.combined(with: .offset(y: 4))
     }
 
     private func updateMeasuredHeight(_ current: inout CGFloat, to newValue: CGFloat) {

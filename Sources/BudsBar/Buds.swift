@@ -35,6 +35,8 @@ final class Buds: NSObject {
     var gameModeFeature: FeatureState<Bool> = .unknown
     var pendingEqualizer: EQPreset?
     var pendingGameMode: Bool?
+    var pendingMode: NoiseMode?
+    var pendingANCLevel: ANCLevel?
     /// Battery values exposed by macOS's Bluetooth runtime. This is a fallback while the
     /// vendor channel has not reported a per-bud value; macOS may expose only one aggregate
     /// headset percentage on the audio link.
@@ -52,6 +54,16 @@ final class Buds: NSObject {
     var launchesAtLogin: Bool { settings.launchesAtLogin }
     var lowBatteryNotificationsEnabled: Bool {
         settings.lowBatteryNotificationsEnabled
+    }
+    var connectHUDEnabled: Bool { settings.connectHUDEnabled }
+    var reconnectHUDEnabled: Bool { settings.reconnectHUDEnabled }
+    var unexpectedDisconnectHUDEnabled: Bool { settings.unexpectedDisconnectHUDEnabled }
+    var menuBarBatteryEnabled: Bool { settings.menuBarBatteryEnabled }
+    var suppressesUnexpectedDisconnectPresentation: Bool {
+        isSwitchedOff || isSwitchingDevice
+    }
+    var batteryPresentation: BatteryPresentation {
+        BatteryPresentation(vendor: battery, system: systemBattery, placement: placement)
     }
 
     struct DeviceOption: Identifiable, Equatable {
@@ -104,6 +116,7 @@ final class Buds: NSObject {
 
     /// True while the in-flight connect attempt came from the poll rather than the user.
     private var isAutoConnecting = false
+    private var isSwitchingDevice = false
 
     /// False when no paired device speaks the control protocol — nothing to drive.
     var isPaired: Bool { device != nil }
@@ -134,6 +147,9 @@ final class Buds: NSObject {
     /// insert, remove, or recolour itself. A plain callback rather than observation: the
     /// owner is AppKit, not a SwiftUI view.
     var onStateChange: (() -> Void)?
+    /// Requests a non-modal AppKit presentation from the application owner. This must not be
+    /// a SwiftUI sheet because the controller UI itself lives inside an `NSPopover`.
+    var onWhatsNewRequested: (() -> Void)?
 
     typealias Battery = EarbudsBatteryState
 
@@ -267,6 +283,37 @@ final class Buds: NSObject {
         }
     }
 
+    func setConnectHUDEnabled(_ enabled: Bool) {
+        settings.setConnectHUDEnabled(enabled)
+        onStateChange?()
+    }
+
+    func setReconnectHUDEnabled(_ enabled: Bool) {
+        settings.setReconnectHUDEnabled(enabled)
+        onStateChange?()
+    }
+
+    func setUnexpectedDisconnectHUDEnabled(_ enabled: Bool) {
+        settings.setUnexpectedDisconnectHUDEnabled(enabled)
+        onStateChange?()
+    }
+
+    func setMenuBarBatteryEnabled(_ enabled: Bool) {
+        settings.setMenuBarBatteryEnabled(enabled)
+        onStateChange?()
+    }
+
+    func panelWillOpen() {
+        let version = "1.3"
+        guard WhatsNewPresentationPolicy.requestIfNeeded(version: version, settings: settings)
+        else { return }
+        onWhatsNewRequested?()
+    }
+
+    func showWhatsNew() {
+        onWhatsNewRequested?()
+    }
+
     /// How often the link state is re-read. `isConnected()` is a local lookup, not a radio
     /// round trip, so this can be brisk — it sets how fast the menu bar item reacts to a
     /// case being shut.
@@ -309,6 +356,7 @@ final class Buds: NSObject {
               })
         else { return }
 
+        isSwitchingDevice = true
         closeControlChannel()
         disconnectObserver?.unregister()
         disconnectObserver = nil
@@ -329,6 +377,8 @@ final class Buds: NSObject {
         gameModeFeature = .unknown
         pendingEqualizer = nil
         pendingGameMode = nil
+        pendingMode = nil
+        pendingANCLevel = nil
         systemBattery = Battery()
         batteryNotificationCoordinator.reset()
         accessoryBattery = nil
@@ -339,6 +389,7 @@ final class Buds: NSObject {
         mode = nil
         ancLevel = nil
         refreshConnectionState()
+        isSwitchingDevice = false
     }
 
     private func refreshPairedDevices() {
@@ -592,6 +643,10 @@ final class Buds: NSObject {
             placement = Placement()
             mode = nil
             ancLevel = nil
+            pendingMode = nil
+            pendingANCLevel = nil
+            pendingEqualizer = nil
+            pendingGameMode = nil
         }
     }
 
@@ -748,6 +803,8 @@ final class Buds: NSObject {
         gameModeFeature = next.gameModeFeature
         pendingEqualizer = next.pendingEqualizer
         pendingGameMode = next.pendingGameMode
+        pendingMode = next.pendingMode
+        pendingANCLevel = next.pendingANCLevel
         if case .loading = batteryFeature {
             lastVendorBatteryRequestAt = Date()
         }
@@ -848,8 +905,9 @@ final class Buds: NSObject {
         lastVendorBatteryRequestAt = Date()
     }
 
-    func refreshDeviceInformation() {
-        _ = earbudsSession?.retryDeviceInformationSync()
+    @discardableResult
+    func refreshDeviceInformation() -> Bool {
+        earbudsSession?.retryDeviceInformationSync() ?? false
     }
 
     private static let soundFeatureRefreshInterval: TimeInterval = 10

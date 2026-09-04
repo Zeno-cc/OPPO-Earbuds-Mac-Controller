@@ -16,6 +16,7 @@ struct NoiseControlSection: View {
             CompactSegmentedControl(
                 values: NoiseMode.allCases,
                 selection: buds.mode,
+                pendingValue: buds.pendingMode,
                 size: .primary,
                 isEnabled: canSwitchModes,
                 accessibilityLabel: "降噪模式",
@@ -25,12 +26,13 @@ struct NoiseControlSection: View {
             if buds.mode == .noiseCancellation {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("降噪强度")
-                        .font(.caption.weight(.medium))
+                        .font(.callout.weight(.medium))
                         .foregroundStyle(.secondary)
 
                     CompactSegmentedControl(
                         values: ANCLevel.allCases,
                         selection: buds.ancLevel,
+                        pendingValue: buds.pendingANCLevel,
                         size: .secondary,
                         isEnabled: canSwitchModes,
                         accessibilityLabel: "降噪强度",
@@ -53,7 +55,7 @@ struct NoiseControlSection: View {
             }
         }
         .animation(
-            PanelDesignTokens.stateAnimation(reduceMotion: reduceMotion),
+            MotionTokens.state(reduceMotion: reduceMotion),
             value: buds.mode)
     }
 

@@ -30,6 +30,8 @@ struct CompactSegmentedControl<Value: Hashable>: View {
     let action: (Value) -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorSchemeContrast) private var contrast
+    @Namespace private var selectionNamespace
     @State private var hoveredValue: Value?
     @FocusState private var focusedValue: Value?
 
@@ -61,15 +63,19 @@ struct CompactSegmentedControl<Value: Hashable>: View {
         }
         .padding(3)
         .background(
-            Color.primary.opacity(0.055),
+            Color.primary.opacity(PanelDesignTokens.controlFillOpacity),
             in: .rect(cornerRadius: PanelDesignTokens.sectionRadius))
+        .overlay {
+            RoundedRectangle(cornerRadius: PanelDesignTokens.sectionRadius)
+                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(accessibilityLabel)
         .animation(
-            PanelDesignTokens.stateAnimation(reduceMotion: reduceMotion),
+            MotionTokens.state(reduceMotion: reduceMotion),
             value: selection)
         .animation(
-            PanelDesignTokens.stateAnimation(reduceMotion: reduceMotion),
+            MotionTokens.state(reduceMotion: reduceMotion),
             value: pendingValue)
     }
 
@@ -84,11 +90,8 @@ struct CompactSegmentedControl<Value: Hashable>: View {
         } label: {
             ZStack(alignment: .trailing) {
                 Text(label(value))
-                    .font(size.font)
-                    .foregroundStyle(
-                        selected
-                            ? AnyShapeStyle(Color(nsColor: .selectedControlTextColor))
-                            : AnyShapeStyle(.primary))
+                    .font(selected ? size.font.weight(.semibold) : size.font)
+                    .foregroundStyle(.primary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.72)
                     .frame(maxWidth: .infinity)
@@ -98,26 +101,37 @@ struct CompactSegmentedControl<Value: Hashable>: View {
                         .controlSize(.mini)
                         .tint(
                             selected
-                                ? Color(nsColor: .selectedControlTextColor)
+                                ? .primary
                                 : .accentColor)
                         .padding(.trailing, 5)
                 }
             }
             .frame(maxWidth: .infinity)
             .frame(height: size.height)
-            .background(
-                selected
-                    ? Color.accentColor
-                    : Color.primary.opacity(hovered ? 0.10 : 0.001),
-                in: .rect(cornerRadius: PanelDesignTokens.sectionRadius))
+            .background {
+                if selected {
+                    RoundedRectangle(cornerRadius: PanelDesignTokens.controlRadius)
+                        .fill(Color.accentColor.opacity(PanelDesignTokens.selectedFillOpacity))
+                        .matchedGeometryEffect(id: "confirmed-selection", in: selectionNamespace)
+                        .overlay {
+                            RoundedRectangle(cornerRadius: PanelDesignTokens.controlRadius)
+                                .stroke(
+                                    Color.accentColor.opacity(PanelDesignTokens.selectedStrokeOpacity),
+                                    lineWidth: 1)
+                        }
+                } else {
+                    RoundedRectangle(cornerRadius: PanelDesignTokens.controlRadius)
+                        .fill(Color.primary.opacity(hovered ? 0.075 : 0.001))
+                }
+            }
             .overlay {
                 if focused {
-                    RoundedRectangle(cornerRadius: PanelDesignTokens.sectionRadius)
+                    RoundedRectangle(cornerRadius: PanelDesignTokens.controlRadius)
                         .stroke(
                             selected
-                                ? Color(nsColor: .selectedControlTextColor).opacity(0.85)
+                                ? Color.primary.opacity(0.85)
                                 : Color.accentColor.opacity(0.85),
-                            lineWidth: 2)
+                            lineWidth: contrast == .increased ? 2.5 : 2)
                         .padding(1)
                 }
             }

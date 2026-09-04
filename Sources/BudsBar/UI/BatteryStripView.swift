@@ -3,13 +3,14 @@ import SwiftUI
 
 struct BatteryStripView: View {
     @Bindable var buds: Buds
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        if batteryItems.isEmpty {
+        if buds.batteryPresentation.items.isEmpty {
             batteryStatus
         } else {
-            HStack(spacing: PanelDesignTokens.spacing8) {
-                ForEach(batteryItems) { item in
+            HStack(spacing: 0) {
+                ForEach(buds.batteryPresentation.items) { item in
                     batteryItem(item)
                 }
             }
@@ -17,58 +18,7 @@ struct BatteryStripView: View {
         }
     }
 
-    private var batteryItems: [BatteryItem] {
-        let left = preferredBatteryReading(buds.battery.left, buds.systemBattery.left)
-        let right = preferredBatteryReading(buds.battery.right, buds.systemBattery.right)
-        let enclosure = preferredBatteryReading(
-            buds.battery.enclosure, buds.systemBattery.enclosure)
-        let combined = preferredBatteryReading(
-            buds.battery.combined, buds.systemBattery.combined)
-
-        var items: [BatteryItem] = []
-        if left?.level != nil || right?.level != nil {
-            if let left, left.level != nil {
-                items.append(BatteryItem(
-                    id: "left",
-                    label: "L",
-                    accessibilityName: "左耳",
-                    reading: left,
-                    placement: buds.placement.left))
-            }
-            if let right, right.level != nil {
-                items.append(BatteryItem(
-                    id: "right",
-                    label: "R",
-                    accessibilityName: "右耳",
-                    reading: right,
-                    placement: buds.placement.right))
-            }
-        } else if let combined, combined.level != nil {
-            items.append(BatteryItem(
-                id: "combined",
-                label: "耳机",
-                accessibilityName: "耳机",
-                reading: combined))
-        }
-
-        if let enclosure, enclosure.level != nil {
-            items.append(BatteryItem(
-                id: "enclosure",
-                label: "盒",
-                accessibilityName: "充电盒",
-                reading: enclosure))
-        }
-        return items
-    }
-
-    private func preferredBatteryReading(
-        _ vendor: BatteryReading?,
-        _ system: BatteryReading?
-    ) -> BatteryReading? {
-        vendor?.level != nil ? vendor : system
-    }
-
-    private func batteryItem(_ item: BatteryItem) -> some View {
+    private func batteryItem(_ item: BatteryPresentation.Item) -> some View {
         let level = item.reading.level
         let isCharging = item.reading.isCharging == true
         let isStowed = item.placement == .inCase
@@ -77,28 +27,54 @@ struct BatteryStripView: View {
                 + (isStowed ? "，位于充电盒内" : "")
         } ?? "\(item.accessibilityName)电量未知"
 
-        return HStack(spacing: PanelDesignTokens.spacing4) {
-            Text(item.label)
-                .font(.system(size: 11, weight: .regular))
-                .foregroundStyle(.tertiary)
-            if let level {
+        return VStack(alignment: .leading, spacing: PanelDesignTokens.spacing4) {
+            HStack(spacing: PanelDesignTokens.spacing4) {
+                Text(item.label)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
                 if isCharging {
                     Image(systemName: "bolt.fill")
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.green)
+                        .transition(.scale(scale: 0.8).combined(with: .opacity))
                 }
+            }
+            if let level {
                 Text("\(level)%")
-                    .font(.system(size: 14, weight: .medium))
+                    .font(.system(size: 20, weight: .semibold, design: .rounded))
                     .monospacedDigit()
+                    .contentTransition(.numericText(value: Double(level)))
                     .foregroundStyle(isStowed ? .secondary : .primary)
+                Capsule()
+                    .fill(Color.primary.opacity(PanelDesignTokens.batteryTrackOpacity))
+                    .frame(
+                        width: PanelDesignTokens.batteryBarWidth,
+                        height: PanelDesignTokens.batteryBarHeight)
+                    .overlay(alignment: .leading) {
+                        Capsule()
+                            .fill(
+                                isCharging
+                                    ? Color.green
+                                    : Color.accentColor.opacity(PanelDesignTokens.batteryAccentOpacity))
+                            .frame(
+                                width: PanelDesignTokens.batteryBarWidth * CGFloat(level) / 100,
+                                height: PanelDesignTokens.batteryBarHeight)
+                    }
+                    .accessibilityHidden(true)
             }
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, PanelDesignTokens.spacing8)
+        .padding(.vertical, PanelDesignTokens.spacing4)
         .lineLimit(1)
         .minimumScaleFactor(0.78)
         .help(item.accessibilityName)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityDescription)
+        .animation(MotionTokens.state(reduceMotion: reduceMotion), value: isCharging)
+        .animation(
+            reduceMotion ? nil : .easeOut(duration: MotionTokens.battery),
+            value: level)
     }
 
     @ViewBuilder
@@ -127,12 +103,4 @@ struct BatteryStripView: View {
         }
     }
 
-}
-
-private struct BatteryItem: Identifiable {
-    let id: String
-    let label: String
-    let accessibilityName: String
-    let reading: BatteryReading
-    var placement: BudsProtocol.BudPlacement?
 }

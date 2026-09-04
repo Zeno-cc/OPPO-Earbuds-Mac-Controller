@@ -25,6 +25,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var outsideClickMonitor: Any?
     /// Pending hide, so removal can be debounced. See `syncStatusItem`.
     private var hideWorkItem: DispatchWorkItem?
+    private var wakeObserver: NSObjectProtocol?
+    private var stabilizingAfterWakeUntil = Date.distantPast
+    private lazy var whatsNewPanelController = WhatsNewPanelController()
+    private lazy var hudCoordinator = ConnectionHUDCoordinator(
+        snapshot: { [buds] event in
+            return HUDSnapshot(buds: buds, event: event)
+        },
+        isEnabled: { [buds] event in
+            switch event {
+            case .connected: return buds.connectHUDEnabled
+            case .reconnected: return buds.reconnectHUDEnabled
+            case .unexpectedDisconnected: return buds.unexpectedDisconnectHUDEnabled
+            }
+        })
 
     /// How long unavailability must persist before the item is removed. The link genuinely
     /// bounces during a quick off→on — the old session's teardown notifications land after
@@ -34,6 +48,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private static let hideDelay: TimeInterval = 6
 
     func applicationWillTerminate(_ notification: Notification) {
+        if let wakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
+        }
         buds.shutdown()
     }
 
@@ -56,7 +73,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         statusItem.button?.target = self
         statusItem.button?.action = #selector(togglePanel)
 
-        buds.onStateChange = { [weak self] in self?.syncStatusItem() }
+        hudCoordinator.observe(connectionObservation)
+        buds.onStateChange = { [weak self] in
+            guard let self else { return }
+            self.syncStatusItem()
+            if Date() < self.stabilizingAfterWakeUntil {
+                self.hudCoordinator.stabilize(with: self.connectionObservation)
+            } else {
+                self.hudCoordinator.observe(self.connectionObservation)
+            }
+        }
+        buds.onWhatsNewRequested = { [weak self] in
+            self?.whatsNewPanelController.show()
+        }
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.stabilizingAfterWakeUntil = Date().addingTimeInterval(1)
+            self.hudCoordinator.stabilize(with: self.connectionObservation)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                guard let self else { return }
+                self.buds.refreshConnectionState()
+                self.hudCoordinator.stabilize(with: self.connectionObservation)
+            }
+        }
         syncStatusItem()
     }
 
@@ -100,6 +143,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             lastIconConnected = buds.isConnected
             statusItem.button?.image = menuBarIcon
         }
+        guard statusItem.isVisible, let button = statusItem.button else { return }
+        let percentage = buds.menuBarBatteryEnabled
+            ? buds.batteryPresentation.menuBarPercentage : nil
+        statusItem.length = percentage == nil
+            ? NSStatusItem.squareLength : NSStatusItem.variableLength
+        button.title = percentage.map { " \($0)%" } ?? ""
+        button.imagePosition = percentage == nil ? .imageOnly : .imageLeading
+        button.alphaValue = statusItemOpacity
+        button.toolTip = statusItemTooltip
     }
 
     @objc private func togglePanel() {
@@ -111,6 +163,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // The panel is rebuilt from live state each time it opens rather than showing
         // whatever it last rendered.
         buds.refreshConnectionState()
+        buds.panelWillOpen()
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         popover.contentViewController?.view.window?.makeKey()
 
@@ -151,5 +204,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             NSImage.SymbolConfiguration(paletteColors: [.systemRed])) ?? image
         red.isTemplate = false
         return red
+    }
+
+    private var connectionObservation: ConnectionExperienceObservation {
+        ConnectionExperienceObservation(
+            isConnected: buds.isConnected,
+            suppressUnexpectedDisconnect: buds.suppressesUnexpectedDisconnectPresentation)
+    }
+
+    private var statusItemOpacity: CGFloat {
+        if buds.isBusy { return 0.72 }
+        return buds.isConnected ? 1 : 0.52
+    }
+
+    private var statusItemTooltip: String {
+        let state: String
+        if buds.isBusy {
+            state = buds.isConnected ? "正在断开" : "正在连接"
+        } else {
+            state = buds.isConnected ? "已连接" : "未连接"
+        }
+        var parts = [buds.name, state]
+        let slots = buds.batteryPresentation.items.filter {
+            $0.kind == .left || $0.kind == .right
+        }
+        if !slots.isEmpty {
+            parts.append(slots.compactMap { item in
+                item.reading.level.map { "\(item.label) \($0)%" }
+            }.joined(separator: " · "))
+        }
+        return parts.joined(separator: " · ")
     }
 }

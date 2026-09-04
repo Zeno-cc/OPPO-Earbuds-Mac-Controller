@@ -5,14 +5,18 @@ struct SoundSection: View {
     @Bindable var buds: Buds
 
     var body: some View {
-        VStack(alignment: .leading, spacing: PanelDesignTokens.spacing12) {
+        VStack(alignment: .leading, spacing: PanelDesignTokens.spacing16) {
             SectionHeader("音效")
 
             if buds.supportsEqualizer {
-                VStack(alignment: .leading, spacing: PanelDesignTokens.spacing8) {
-                    Text("大师调音")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: PanelDesignTokens.spacing12) {
+                    HStack(spacing: PanelDesignTokens.spacing8) {
+                        Image(systemName: "slider.horizontal.3")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(.secondary)
+                        Text("大师调音")
+                            .font(.subheadline.weight(.medium))
+                    }
 
                     CompactSegmentedControl(
                         values: EQPreset.allCases,
@@ -43,10 +47,17 @@ struct SoundSection: View {
     }
 
     private var gameModeRow: some View {
-        HStack(alignment: .center, spacing: PanelDesignTokens.spacing12) {
+        HStack(alignment: .top, spacing: PanelDesignTokens.spacing12) {
+            Image(systemName: "gamecontroller.fill")
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 20, height: 20)
+                .padding(.top, 2)
+                .accessibilityHidden(true)
+
             VStack(alignment: .leading, spacing: PanelDesignTokens.spacing4) {
                 Text("游戏模式")
-                    .font(.callout.weight(.medium))
+                    .font(.subheadline.weight(.medium))
                 Text("降低游戏声音延迟")
                     .font(.caption)
                     .foregroundStyle(.secondary)

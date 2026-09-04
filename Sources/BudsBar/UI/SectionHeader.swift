@@ -9,7 +9,8 @@ struct SectionHeader: View {
 
     var body: some View {
         Text(title)
-            .font(.system(size: 14, weight: .semibold))
+            .font(.system(size: PanelDesignTokens.sectionTitleSize, weight: .semibold))
+            .foregroundStyle(.primary.opacity(0.86))
             .accessibilityAddTraits(.isHeader)
     }
 }

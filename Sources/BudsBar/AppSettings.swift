@@ -7,11 +7,20 @@ final class AppSettings {
     private enum Key {
         static let preferredDeviceAddress = "preferredDeviceAddress"
         static let lowBatteryNotificationsEnabled = "lowBatteryNotificationsEnabled"
+        static let connectHUDEnabled = "connectHUDEnabled"
+        static let reconnectHUDEnabled = "reconnectHUDEnabled"
+        static let unexpectedDisconnectHUDEnabled = "unexpectedDisconnectHUDEnabled"
+        static let menuBarBatteryEnabled = "menuBarBatteryEnabled"
+        static let lastSeenWhatsNewVersion = "lastSeenWhatsNewVersion"
     }
 
     private let defaults: UserDefaults
     private(set) var launchesAtLogin: Bool
     private(set) var lowBatteryNotificationsEnabled: Bool
+    private(set) var connectHUDEnabled: Bool
+    private(set) var reconnectHUDEnabled: Bool
+    private(set) var unexpectedDisconnectHUDEnabled: Bool
+    private(set) var menuBarBatteryEnabled: Bool
     var preferredDeviceAddress: String? {
         didSet {
             if let preferredDeviceAddress {
@@ -27,6 +36,13 @@ final class AppSettings {
         self.launchesAtLogin = SMAppService.mainApp.status == .enabled
         self.lowBatteryNotificationsEnabled = defaults.bool(
             forKey: Key.lowBatteryNotificationsEnabled)
+        self.connectHUDEnabled = Self.bool(
+            defaults, key: Key.connectHUDEnabled, defaultValue: true)
+        self.reconnectHUDEnabled = Self.bool(
+            defaults, key: Key.reconnectHUDEnabled, defaultValue: true)
+        self.unexpectedDisconnectHUDEnabled = Self.bool(
+            defaults, key: Key.unexpectedDisconnectHUDEnabled, defaultValue: true)
+        self.menuBarBatteryEnabled = defaults.bool(forKey: Key.menuBarBatteryEnabled)
         self.preferredDeviceAddress = defaults.string(forKey: Key.preferredDeviceAddress)
     }
 
@@ -55,5 +71,41 @@ final class AppSettings {
     func setLowBatteryNotificationsEnabled(_ enabled: Bool) {
         lowBatteryNotificationsEnabled = enabled
         defaults.set(enabled, forKey: Key.lowBatteryNotificationsEnabled)
+    }
+
+    func setConnectHUDEnabled(_ enabled: Bool) {
+        connectHUDEnabled = enabled
+        defaults.set(enabled, forKey: Key.connectHUDEnabled)
+    }
+
+    func setReconnectHUDEnabled(_ enabled: Bool) {
+        reconnectHUDEnabled = enabled
+        defaults.set(enabled, forKey: Key.reconnectHUDEnabled)
+    }
+
+    func setUnexpectedDisconnectHUDEnabled(_ enabled: Bool) {
+        unexpectedDisconnectHUDEnabled = enabled
+        defaults.set(enabled, forKey: Key.unexpectedDisconnectHUDEnabled)
+    }
+
+    func setMenuBarBatteryEnabled(_ enabled: Bool) {
+        menuBarBatteryEnabled = enabled
+        defaults.set(enabled, forKey: Key.menuBarBatteryEnabled)
+    }
+
+    func hasSeenWhatsNew(version: String) -> Bool {
+        defaults.string(forKey: Key.lastSeenWhatsNewVersion) == version
+    }
+
+    func markWhatsNewSeen(version: String) {
+        defaults.set(version, forKey: Key.lastSeenWhatsNewVersion)
+    }
+
+    private static func bool(
+        _ defaults: UserDefaults,
+        key: String,
+        defaultValue: Bool
+    ) -> Bool {
+        defaults.object(forKey: key) == nil ? defaultValue : defaults.bool(forKey: key)
     }
 }
