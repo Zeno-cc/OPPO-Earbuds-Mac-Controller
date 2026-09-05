@@ -11,6 +11,7 @@ final class AppSettings {
         static let reconnectHUDEnabled = "reconnectHUDEnabled"
         static let unexpectedDisconnectHUDEnabled = "unexpectedDisconnectHUDEnabled"
         static let menuBarBatteryEnabled = "menuBarBatteryEnabled"
+        static let dockIconEnabled = "dockIconEnabled"
         static let lastSeenWhatsNewVersion = "lastSeenWhatsNewVersion"
     }
 
@@ -21,6 +22,7 @@ final class AppSettings {
     private(set) var reconnectHUDEnabled: Bool
     private(set) var unexpectedDisconnectHUDEnabled: Bool
     private(set) var menuBarBatteryEnabled: Bool
+    private(set) var dockIconEnabled: Bool
     var preferredDeviceAddress: String? {
         didSet {
             if let preferredDeviceAddress {
@@ -43,6 +45,8 @@ final class AppSettings {
         self.unexpectedDisconnectHUDEnabled = Self.bool(
             defaults, key: Key.unexpectedDisconnectHUDEnabled, defaultValue: true)
         self.menuBarBatteryEnabled = defaults.bool(forKey: Key.menuBarBatteryEnabled)
+        self.dockIconEnabled = Self.bool(
+            defaults, key: Key.dockIconEnabled, defaultValue: true)
         self.preferredDeviceAddress = defaults.string(forKey: Key.preferredDeviceAddress)
     }
 
@@ -93,6 +97,11 @@ final class AppSettings {
         defaults.set(enabled, forKey: Key.menuBarBatteryEnabled)
     }
 
+    func setDockIconEnabled(_ enabled: Bool) {
+        dockIconEnabled = enabled
+        defaults.set(enabled, forKey: Key.dockIconEnabled)
+    }
+
     func hasSeenWhatsNew(version: String) -> Bool {
         defaults.string(forKey: Key.lastSeenWhatsNewVersion) == version
     }
@@ -107,5 +116,14 @@ final class AppSettings {
         defaultValue: Bool
     ) -> Bool {
         defaults.object(forKey: key) == nil ? defaultValue : defaults.bool(forKey: key)
+    }
+}
+
+enum AppVisibilityPolicy {
+    static func shouldShowMenuBarItem(
+        isDeviceAvailable: Bool,
+        dockIconEnabled: Bool
+    ) -> Bool {
+        isDeviceAvailable || !dockIconEnabled
     }
 }

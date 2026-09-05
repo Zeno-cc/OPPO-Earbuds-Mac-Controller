@@ -141,7 +141,7 @@ struct PanelView: View {
         if buds.isPaired {
             return "请将耳机从充电盒中取出，然后点击连接。"
         }
-        return "没有找到支持此协议的已配对耳机。请先在蓝牙设置中配对 realme 或 OPPO 耳机。"
+        return "没有找到支持此协议的已配对耳机。请先在蓝牙设置中配对 OPPO 耳机。"
     }
 
     private var effectiveErrorHeight: CGFloat {

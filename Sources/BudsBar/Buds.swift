@@ -59,6 +59,7 @@ final class Buds: NSObject {
     var reconnectHUDEnabled: Bool { settings.reconnectHUDEnabled }
     var unexpectedDisconnectHUDEnabled: Bool { settings.unexpectedDisconnectHUDEnabled }
     var menuBarBatteryEnabled: Bool { settings.menuBarBatteryEnabled }
+    var dockIconEnabled: Bool { settings.dockIconEnabled }
     var suppressesUnexpectedDisconnectPresentation: Bool {
         isSwitchedOff || isSwitchingDevice
     }
@@ -300,6 +301,11 @@ final class Buds: NSObject {
 
     func setMenuBarBatteryEnabled(_ enabled: Bool) {
         settings.setMenuBarBatteryEnabled(enabled)
+        onStateChange?()
+    }
+
+    func setDockIconEnabled(_ enabled: Bool) {
+        settings.setDockIconEnabled(enabled)
         onStateChange?()
     }
 

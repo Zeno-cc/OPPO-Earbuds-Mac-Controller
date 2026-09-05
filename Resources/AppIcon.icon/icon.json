@@ -1,0 +1,27 @@
+{
+  "fill": "none",
+  "groups": [
+    {
+      "layers": [
+        {
+          "glass": false,
+          "image-name": "AppIcon-master.png",
+          "name": "AppIcon"
+        }
+      ],
+      "shadow": {
+        "kind": "none",
+        "opacity": 0
+      },
+      "translucency": {
+        "enabled": false,
+        "value": 0
+      }
+    }
+  ],
+  "supported-platforms": {
+    "squares": [
+      "macOS"
+    ]
+  }
+}

@@ -47,12 +47,14 @@ final class PresentationTests: XCTestCase {
         XCTAssertTrue(settings.reconnectHUDEnabled)
         XCTAssertTrue(settings.unexpectedDisconnectHUDEnabled)
         XCTAssertFalse(settings.menuBarBatteryEnabled)
+        XCTAssertTrue(settings.dockIconEnabled)
         XCTAssertFalse(settings.hasSeenWhatsNew(version: "1.3"))
 
         settings.setConnectHUDEnabled(false)
         settings.setReconnectHUDEnabled(false)
         settings.setUnexpectedDisconnectHUDEnabled(false)
         settings.setMenuBarBatteryEnabled(true)
+        settings.setDockIconEnabled(false)
         settings.markWhatsNewSeen(version: "1.3")
 
         let restored = AppSettings(defaults: defaults)
@@ -60,7 +62,23 @@ final class PresentationTests: XCTestCase {
         XCTAssertFalse(restored.reconnectHUDEnabled)
         XCTAssertFalse(restored.unexpectedDisconnectHUDEnabled)
         XCTAssertTrue(restored.menuBarBatteryEnabled)
+        XCTAssertFalse(restored.dockIconEnabled)
         XCTAssertTrue(restored.hasSeenWhatsNew(version: "1.3"))
+    }
+
+    func testMenuBarRemainsReachableWhenDockIconIsHidden() {
+        XCTAssertTrue(
+            AppVisibilityPolicy.shouldShowMenuBarItem(
+                isDeviceAvailable: false,
+                dockIconEnabled: false))
+        XCTAssertFalse(
+            AppVisibilityPolicy.shouldShowMenuBarItem(
+                isDeviceAvailable: false,
+                dockIconEnabled: true))
+        XCTAssertTrue(
+            AppVisibilityPolicy.shouldShowMenuBarItem(
+                isDeviceAvailable: true,
+                dockIconEnabled: true))
     }
 
     func testBatteryPresentationPrefersVendorSlotsAndKeepsCase() {

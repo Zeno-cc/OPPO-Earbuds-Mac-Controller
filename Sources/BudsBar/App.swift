@@ -27,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var hideWorkItem: DispatchWorkItem?
     private var wakeObserver: NSObjectProtocol?
     private var stabilizingAfterWakeUntil = Date.distantPast
+    private var appliedDockIconEnabled: Bool?
     private lazy var whatsNewPanelController = WhatsNewPanelController()
     private lazy var hudCoordinator = ConnectionHUDCoordinator(
         snapshot: { [buds] event in
@@ -46,6 +47,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     /// item must ride that out rather than flicker away. A case being shut does not recover,
     /// so the item still disappears, just this much later.
     private static let hideDelay: TimeInterval = 6
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        syncDockIcon()
+    }
 
     func applicationWillTerminate(_ notification: Notification) {
         if let wakeObserver {
@@ -76,6 +81,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         hudCoordinator.observe(connectionObservation)
         buds.onStateChange = { [weak self] in
             guard let self else { return }
+            self.syncDockIcon()
             self.syncStatusItem()
             if Date() < self.stabilizingAfterWakeUntil {
                 self.hudCoordinator.stabilize(with: self.connectionObservation)
@@ -100,7 +106,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 self.hudCoordinator.stabilize(with: self.connectionObservation)
             }
         }
+        syncDockIcon()
         syncStatusItem()
+    }
+
+    private func syncDockIcon() {
+        let enabled = buds.dockIconEnabled
+        guard appliedDockIconEnabled != enabled else { return }
+        appliedDockIconEnabled = enabled
+        NSApplication.shared.setActivationPolicy(enabled ? .regular : .accessory)
     }
 
     /// Adds or removes the item, and keeps its glyph in step. Driven by `Buds`' own poll, so
@@ -115,7 +129,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // `applicationDidFinishLaunching` has created the item.
         guard let statusItem else { return }
 
-        if buds.isAvailable {
+        let shouldShow = AppVisibilityPolicy.shouldShowMenuBarItem(
+            isDeviceAvailable: buds.isAvailable,
+            dockIconEnabled: buds.dockIconEnabled)
+
+        if shouldShow {
             // Showing is immediate; any pending hide was a bounce and is void.
             hideWorkItem?.cancel()
             hideWorkItem = nil

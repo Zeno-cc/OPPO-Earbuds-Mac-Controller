@@ -224,6 +224,10 @@ private struct MoreOptionsView: View {
                 }
 
                 inspectorGroup("偏好") {
+                    settingRow("显示 Dock 图标", isOn: Binding(
+                        get: { buds.dockIconEnabled },
+                        set: { buds.setDockIconEnabled($0) }))
+                        .help("关闭后仍可从菜单栏打开设置")
                     settingRow("开机自动启动", isOn: Binding(
                         get: { buds.launchesAtLogin },
                         set: { buds.setLaunchAtLogin($0) }))
