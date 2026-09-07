@@ -80,7 +80,7 @@ public enum EQPreset: UInt8, CaseIterable, Identifiable {
 ///
 ///     aa <len> <b2> <b3> <opcode:u16be> <seq> <payloadLen:u16le> <payload…>
 ///
-/// `len` counts every byte after itself, so a frame is `len + 2` bytes long. There is no
+/// `len` is a base-128 variable-length integer counting bytes after itself. There is no
 /// trailing checksum — the length accounts for the payload exactly.
 ///
 /// The payload is a tagged list: `<type> <count>` followed by `count` (id, value) pairs.
@@ -122,8 +122,10 @@ public enum BudsProtocol {
         case battery(BatterySlot, BatteryReading?)
         /// Where one bud is. Only emitted for values `BudPlacement` recognises.
         case placement(BatterySlot, BudPlacement)
+        case unknownPlacement(BatterySlot, UInt8)
         case deviceInformation(DeviceInformation)
         case equalizer(EQPreset)
+        case unknownEqualizer(UInt8)
         case gameMode(Bool)
     }
 
@@ -138,7 +140,7 @@ public enum BudsProtocol {
     ///
     /// The semantic values deliberately have no raw wire representation: T500 reports
     /// `00/03`, while Air5 reports `04/05`. Transitional values such as Air5 `07` remain
-    /// unknown and leave the last stable UI state alone.
+    /// unknown and invalidate the affected bud's current placement.
     public enum BudPlacement: Equatable {
         case inCase
         case inUse
@@ -181,14 +183,15 @@ public enum BudsProtocol {
     /// Builds a frame, filling in both length fields.
     static func makeFrame(_ b2: UInt8, _ b3: UInt8, _ b4: UInt8, _ b5: UInt8,
                           sequence: UInt8, payload: [UInt8]) -> [UInt8] {
-        // `len` is a single byte covering the whole frame, so the payload cannot exceed
-        // what it can count. Every caller here sends three bytes or fewer; without this the
-        // overflow would surface as an arithmetic trap inside the conversion below.
-        precondition(payload.count <= 0xff - 7, "payload too long for a one-byte length")
-        var frame: [UInt8] = [sync, 0, b2, b3, b4, b5, sequence,
+        // Keep the existing outbound payload limit; encode the outer length correctly
+        // once the body reaches 128 bytes (e.g. an EQ with a longer name).
+        precondition(payload.count <= 0xff - 7, "payload exceeds supported outbound size")
+        let bodyLength = payload.count + 7
+        let length: [UInt8] = bodyLength < 128 ? [UInt8(bodyLength)]
+            : [UInt8(bodyLength & 0x7f) | 0x80, UInt8(bodyLength >> 7)]
+        var frame: [UInt8] = [sync] + length + [b2, b3, b4, b5, sequence,
                               UInt8(payload.count & 0xff), UInt8(payload.count >> 8)]
         frame += payload
-        frame[1] = UInt8(frame.count - 2)     // len counts every byte after itself
         return frame
     }
 
@@ -220,8 +223,18 @@ public enum BudsProtocol {
             if start > 0 { buffer.removeFirst(start) }
 
             guard buffer.count >= 2 else { break }
-            let declaredTotal = Int(buffer[1]) + 2
-            guard declaredTotal >= 9 else {
+            let lengthBytes = buffer[1] & 0x80 == 0 ? 1 : 2
+            guard buffer.count >= 1 + lengthBytes else { break }
+            // Official OPOv1 wrapper uses at most two base-128 length bytes.
+            if lengthBytes == 2 && buffer[2] & 0x80 != 0 {
+                buffer.removeFirst()
+                continue
+            }
+            let bodyLength = Int(buffer[1] & 0x7f)
+                + (lengthBytes == 2 ? Int(buffer[2]) << 7 : 0)
+            let bodyStart = 1 + lengthBytes
+            let declaredTotal = bodyStart + bodyLength
+            guard bodyLength >= 7 else {
                 // Not a plausible frame — drop the sync byte and look for the next one.
                 buffer.removeFirst()
                 continue
@@ -229,13 +242,13 @@ public enum BudsProtocol {
             guard buffer.count >= declaredTotal else { break }   // wait for the rest
 
             let raw = Array(buffer[0..<declaredTotal])
-            let opcode = UInt16(raw[4]) << 8 | UInt16(raw[5])
-            let payloadLength = Int(raw[7]) | Int(raw[8]) << 8
-            if 9 + payloadLength == declaredTotal {
+            let opcode = UInt16(raw[bodyStart + 2]) << 8 | UInt16(raw[bodyStart + 3])
+            let payloadLength = Int(raw[bodyStart + 5]) | Int(raw[bodyStart + 6]) << 8
+            if 7 + payloadLength == bodyLength {
                 frames.append(Frame(
                     opcode: opcode,
-                    sequence: raw[6],
-                    payload: Array(raw[9..<declaredTotal]),
+                    sequence: raw[bodyStart + 4],
+                    payload: Array(raw[(bodyStart + 7)..<declaredTotal]),
                     raw: raw))
                 buffer.removeFirst(declaredTotal)
             } else {
@@ -250,9 +263,11 @@ public enum BudsProtocol {
     public static func interpret(_ frame: Frame, profile: Profile = .t500Pro) -> [Update] {
         if frame.opcode == opcodeEqualizerReport {
             guard profile.capabilities.contains(.equalizer),
-                  frame.payload.count == 1,
-                  let preset = EQPreset(rawValue: frame.payload[0])
+                  frame.payload.count == 1
             else { return [] }
+            guard let preset = EQPreset(rawValue: frame.payload[0]) else {
+                return [.unknownEqualizer(frame.payload[0])]
+            }
             return [.equalizer(preset)]
         }
 
@@ -306,9 +321,11 @@ public enum BudsProtocol {
             guard payload.count == 2 + count * 2 else { return [] }
             return pairs.compactMap { id, value in
                 guard let slot = BatterySlot(rawValue: id),
-                      slot != .enclosure,
-                      let placement = profile.decodePlacement(value)
+                      slot != .enclosure
                 else { return nil }
+                guard let placement = profile.decodePlacement(value) else {
+                    return .unknownPlacement(slot, value)
+                }
                 return .placement(slot, placement)
             }
         }
@@ -401,9 +418,11 @@ public enum BudsProtocol {
         guard profile.capabilities.contains(.equalizer),
               frame.opcode == opcodeEqualizerResponse,
               frame.payload.count == 2,
-              frame.payload[0] == 0,
-              let preset = EQPreset(rawValue: frame.payload[1])
+              frame.payload[0] == 0
         else { return [] }
+        guard let preset = EQPreset(rawValue: frame.payload[1]) else {
+            return [.unknownEqualizer(frame.payload[1])]
+        }
         return [.equalizer(preset)]
     }
 

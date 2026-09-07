@@ -29,6 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var stabilizingAfterWakeUntil = Date.distantPast
     private var appliedDockIconEnabled: Bool?
     private lazy var whatsNewPanelController = WhatsNewPanelController()
+    private lazy var customEqualizerPanelController = CustomEqualizerPanelController(buds: buds)
     private lazy var hudCoordinator = ConnectionHUDCoordinator(
         snapshot: { [buds] event in
             return HUDSnapshot(buds: buds, event: event)
@@ -91,6 +92,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         buds.onWhatsNewRequested = { [weak self] in
             self?.whatsNewPanelController.show()
+        }
+        buds.onCustomEqualizerRequested = { [weak self] in
+            guard let self else { return }
+            self.popover.performClose(nil)
+            self.customEqualizerPanelController.show()
         }
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification,

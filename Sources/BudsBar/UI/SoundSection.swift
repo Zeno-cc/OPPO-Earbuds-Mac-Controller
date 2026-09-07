@@ -23,15 +23,48 @@ struct SoundSection: View {
                         selection: currentEqualizer,
                         pendingValue: buds.pendingEqualizer,
                         size: .secondary,
-                        isEnabled: canControlSoundFeatures,
+                        isEnabled: canControlSoundFeatures && buds.operations[.equalizer]?.phase.isPending != true,
                         accessibilityLabel: "均衡器预设",
                         label: { $0.label },
                         action: { buds.set(equalizer: $0) })
 
                     featureStatus(
                         buds.equalizerFeature,
+                        refresh: buds.soundRefresh[.equalizer] ?? .idle,
                         pending: buds.pendingEqualizer != nil,
                         loadingText: "正在读取均衡器…")
+                    if let message = buds.operations[.equalizer]?.phase.message {
+                        Text(message).font(.caption).foregroundStyle(.secondary)
+                    }
+                    if case .ready(let curves) = buds.customEqualizerFeature,
+                       let selected = curves.first(where: \.isSelected) {
+                        Text("自定义：\(selected.name)").font(.caption).foregroundStyle(.secondary)
+                    } else if buds.unknownEqualizerMode != nil {
+                        Text("当前均衡器模式暂未识别")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    if buds.supportsCustomEqualizer {
+                        Button {
+                            buds.onCustomEqualizerRequested?()
+                        } label: {
+                            HStack(spacing: PanelDesignTokens.spacing8) {
+                                Image(systemName: "slider.vertical.3")
+                                    .foregroundStyle(.secondary)
+                                Text("自定义均衡器")
+                                    .font(.subheadline.weight(.medium))
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                            }
+                            .padding(.horizontal, PanelDesignTokens.spacing12)
+                            .frame(height: PanelDesignTokens.primaryControlHeight)
+                            .background(.primary.opacity(PanelDesignTokens.controlFillOpacity),
+                                        in: RoundedRectangle(cornerRadius: PanelDesignTokens.controlRadius))
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!buds.isControlChannelOpen)
+                    }
                 }
             }
 
@@ -63,8 +96,12 @@ struct SoundSection: View {
                     .foregroundStyle(.secondary)
                 featureStatus(
                     buds.gameModeFeature,
+                    refresh: buds.soundRefresh[.gameMode] ?? .idle,
                     pending: buds.pendingGameMode != nil,
                     loadingText: "正在读取游戏模式…")
+                if let message = buds.operations[.gameMode]?.phase.message {
+                    Text(message).font(.caption).foregroundStyle(.secondary)
+                }
             }
 
             Spacer(minLength: PanelDesignTokens.spacing8)
@@ -107,6 +144,7 @@ struct SoundSection: View {
     @ViewBuilder
     private func featureStatus<Value>(
         _ state: FeatureState<Value>,
+        refresh: FeatureRefreshState,
         pending: Bool,
         loadingText: String
     ) -> some View where Value: Equatable {
@@ -114,9 +152,14 @@ struct SoundSection: View {
             Text("正在同步…")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+        } else if case .failed(let message) = refresh {
+            HStack {
+                Text(message).font(.caption).foregroundStyle(.secondary)
+                Button("重试") { buds.refreshSoundFeatures(force: true) }.controlSize(.small)
+            }
         } else {
             switch state {
-            case .loading, .unknown:
+            case .loading:
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
                     Text(loadingText)
@@ -131,7 +174,7 @@ struct SoundSection: View {
                     Button("重试") { buds.refreshSoundFeatures(force: true) }
                         .controlSize(.small)
                 }
-            case .ready, .unsupported:
+            case .unknown, .ready, .unsupported:
                 EmptyView()
             }
         }

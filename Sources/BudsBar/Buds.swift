@@ -32,10 +32,14 @@ final class Buds: NSObject {
     var batteryFeature: FeatureState<BatteryState> = .unknown
     var deviceInformationFeature: FeatureState<DeviceInformation> = .unknown
     var equalizerFeature: FeatureState<EQPreset> = .unknown
+    var customEqualizerFeature: FeatureState<[CustomEqualizer]> = .unknown
     var gameModeFeature: FeatureState<Bool> = .unknown
     var pendingEqualizer: EQPreset?
     var pendingGameMode: Bool?
     var pendingMode: NoiseMode?
+    var operations: [ControlFeature: FeatureOperation] = [:]
+    var unknownEqualizerMode: UInt8?
+    var soundRefresh: [ControlFeature: FeatureRefreshState] = [:]
     var pendingANCLevel: ANCLevel?
     /// Battery values exposed by macOS's Bluetooth runtime. This is a fallback while the
     /// vendor channel has not reported a per-bud value; macOS may expose only one aggregate
@@ -151,6 +155,7 @@ final class Buds: NSObject {
     /// Requests a non-modal AppKit presentation from the application owner. This must not be
     /// a SwiftUI sheet because the controller UI itself lives inside an `NSPopover`.
     var onWhatsNewRequested: (() -> Void)?
+    var onCustomEqualizerRequested: (() -> Void)?
 
     typealias Battery = EarbudsBatteryState
 
@@ -380,11 +385,15 @@ final class Buds: NSObject {
         batteryFeature = .unknown
         deviceInformationFeature = .unknown
         equalizerFeature = .unknown
+        customEqualizerFeature = .unknown
         gameModeFeature = .unknown
         pendingEqualizer = nil
         pendingGameMode = nil
         pendingMode = nil
         pendingANCLevel = nil
+        operations = [:]
+        soundRefresh = [:]
+        unknownEqualizerMode = nil
         systemBattery = Battery()
         batteryNotificationCoordinator.reset()
         accessoryBattery = nil
@@ -806,10 +815,20 @@ final class Buds: NSObject {
         batteryFeature = next.batteryFeature
         deviceInformationFeature = next.deviceInformationFeature
         equalizerFeature = next.equalizerFeature
+        customEqualizerFeature = next.customEqualizerFeature
         gameModeFeature = next.gameModeFeature
         pendingEqualizer = next.pendingEqualizer
         pendingGameMode = next.pendingGameMode
         pendingMode = next.pendingMode
+        if Self.isTracing {
+            for (feature, operation) in next.operations where operations[feature] != operation {
+                let detail = "operation sessionGeneration=\(operation.generation) id=\(operation.id) feature=\(feature) phase=\(operation.phase) target=\(operation.target)"
+                AppLogger.session.debug("\(detail, privacy: .public)")
+            }
+        }
+        operations = next.operations
+        soundRefresh = next.soundRefresh
+        unknownEqualizerMode = next.unknownEqualizerMode
         pendingANCLevel = next.pendingANCLevel
         if case .loading = batteryFeature {
             lastVendorBatteryRequestAt = Date()
@@ -927,6 +946,25 @@ final class Buds: NSObject {
         else { return }
         lastSoundFeatureRequestAt = Date()
     }
+
+    func refreshCustomEqualizer() {
+        _ = earbudsSession?.refreshCustomEqualizer()
+    }
+
+    func applyCustomEqualizer(_ baseline: CustomEqualizer, gains: [Int8]) -> Bool {
+        earbudsSession?.set(customEqualizer: baseline, gains: gains) ?? false
+    }
+
+    func customEqualizerRejection(_ baseline: CustomEqualizer, gains: [Int8]) -> String? {
+        guard let earbudsSession else { return "控制会话不存在，请重新连接耳机" }
+        return earbudsSession.customEqualizerRejection(baseline, gains: gains)
+    }
+
+    func manageCustomEqualizer(_ action: CustomEQAction, baseline: CustomEqualizer?, target: CustomEqualizer) -> Bool {
+        earbudsSession?.manageCustomEqualizer(action, baseline: baseline, target: target) ?? false
+    }
+
+    var supportsCustomEqualizer: Bool { protocolProfile == .encoAir5Pro }
 
     // MARK: - Mode cycle test
 

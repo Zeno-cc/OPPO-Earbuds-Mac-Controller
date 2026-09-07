@@ -1,10 +1,9 @@
-// Recon logger for realme / OPPO / OnePlus vendor RFCOMM channels.
-// Opens each channel READ-ONLY and hex-dumps every inbound frame with a timestamp.
-// Writes nothing to the buds.
+// Standalone receive logger for the verified oppointeraction service only.
+// Prefer the app's BUDSBAR_TRACE: this tool opens its own channel and cannot capture
+// Android's private TX/RX. Quit the app before using this standalone fallback.
 //
-// Run:  swift Tools/sniff.swift [channel …]      (default: 12 15 17)
-//
-// Channel 13 is BESOTA, the firmware OTA service. Never open it.
+// Run: swift Tools/sniff.swift
+// Raw hex requires explicit BUDSBAR_TRACE_RAW=1. No protocol writes are sent.
 
 import Foundation
 import IOBluetooth
@@ -15,21 +14,11 @@ let controlServiceUUID: [UInt8] = [
     0x00, 0x00, 0x07, 0x9a, 0xd1, 0x02, 0x11, 0xe1,
     0x9b, 0x23, 0x00, 0x02, 0x5b, 0x00, 0xa5, 0xa5,
 ]
-let besotaChannel: BluetoothRFCOMMChannelID = 13
-
-/// SDP service names, for labelling the trace.
-let serviceNames: [BluetoothRFCOMMChannelID: String] = [
-    12: "Realme Pearl", 15: "oppointeraction", 17: "RFCOMM COM", 29: "WATCH",
-]
-
-let requested: [BluetoothRFCOMMChannelID] = CommandLine.arguments.count > 1
-    ? CommandLine.arguments.dropFirst().compactMap { BluetoothRFCOMMChannelID($0) }
-    : [12, 15, 17]
-
-let channels = requested.filter { $0 != besotaChannel }
-if channels.count != requested.count {
-    print("refusing channel \(besotaChannel) (BESOTA firmware OTA)")
+guard CommandLine.arguments.count == 1 else {
+    print("Channel-number probing is not supported; use the verified SDP control service.")
+    exit(1)
 }
+let rawTracing = ProcessInfo.processInfo.environment["BUDSBAR_TRACE_RAW"] == "1"
 
 let start = Date()
 func stamp() -> String { String(format: "%8.3f", Date().timeIntervalSince(start)) }
@@ -48,14 +37,15 @@ func discoverDevice() -> IOBluetoothDevice? {
         return nil
     }
     let uuid = IOBluetoothSDPUUID(bytes: controlServiceUUID, length: 16)
-    return paired.first { $0.getServiceRecord(for: uuid) != nil }
+    let compatible = paired.filter { $0.getServiceRecord(for: uuid) != nil }
+    return compatible.count == 1 ? compatible.first : nil
 }
 
 final class Sniffer: NSObject, IOBluetoothRFCOMMChannelDelegate {
     /// Ask the channel which one it is rather than trusting the id we requested.
     private func label(_ channel: IOBluetoothRFCOMMChannel!) -> String {
         let id = channel?.getID() ?? 0
-        return "ch\(id) \(serviceNames[id] ?? "?")"
+        return "ch\(id) oppointeraction"
     }
 
     func rfcommChannelOpenComplete(_ channel: IOBluetoothRFCOMMChannel!, status error: IOReturn) {
@@ -65,7 +55,8 @@ final class Sniffer: NSObject, IOBluetoothRFCOMMChannelDelegate {
     func rfcommChannelData(_ channel: IOBluetoothRFCOMMChannel!, data dataPointer: UnsafeMutableRawPointer!, length dataLength: Int) {
         let bytes = Array(UnsafeBufferPointer(
             start: dataPointer.assumingMemoryBound(to: UInt8.self), count: dataLength))
-        print("[\(stamp())] \(label(channel)): \(hex(bytes))")
+        let detail = rawTracing ? " hex=\(hex(bytes))" : ""
+        print("[\(stamp())] \(label(channel)): RX length=\(bytes.count)\(detail)")
     }
 
     func rfcommChannelClosed(_ channel: IOBluetoothRFCOMMChannel!) {
@@ -74,14 +65,10 @@ final class Sniffer: NSObject, IOBluetoothRFCOMMChannelDelegate {
 }
 
 guard let device = discoverDevice() else {
-    if let forced = ProcessInfo.processInfo.environment["BUDSBAR_ADDRESS"] {
-        print("no device for \(forced)")
-    } else {
-        print("no paired device advertises oppointeraction")
-    }
+    print("Cannot select one compatible paired device; use BUDSBAR_ADDRESS if needed.")
     exit(1)
 }
-print("[\(stamp())] \(device.name ?? "?") connected: \(device.isConnected())")
+print("[\(stamp())] selected device connected: \(device.isConnected())")
 guard device.isConnected() else {
     print("buds are not connected — connect them first"); exit(1)
 }
@@ -94,7 +81,14 @@ RunLoop.current.run(until: Date().addingTimeInterval(3))
 var openChannels: [IOBluetoothRFCOMMChannel?] = []
 var delegates: [Sniffer] = []          // keep alive; the channel does not retain them
 
-for id in channels {
+let uuid = IOBluetoothSDPUUID(bytes: controlServiceUUID, length: 16)
+var id: BluetoothRFCOMMChannelID = 0
+guard let record = device.getServiceRecord(for: uuid),
+      record.getRFCOMMChannelID(&id) == kIOReturnSuccess else {
+    print("Verified control service has no RFCOMM channel; no channel was opened.")
+    exit(1)
+}
+do {
     let sniffer = Sniffer()
     delegates.append(sniffer)
     var channel: IOBluetoothRFCOMMChannel?
@@ -106,5 +100,5 @@ for id in channels {
     }
 }
 
-print("[\(stamp())] listening — change the noise mode on the iPhone now")
+print("[\(stamp())] listening on this Mac's control channel only; not a phone HCI capture")
 RunLoop.current.run()

@@ -6,6 +6,23 @@ struct BatteryStripView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
+        VStack(alignment: .leading, spacing: PanelDesignTokens.spacing4) {
+            batteryContent
+            let earState = EarStatePresentation(placement: buds.placement)
+            if earState.left != nil || earState.right != nil {
+                HStack {
+                    Text(earState.left ?? "左耳 · 状态待确认")
+                    Spacer()
+                    Text(earState.right ?? "右耳 · 状态待确认")
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var batteryContent: some View {
         if buds.batteryPresentation.items.isEmpty {
             batteryStatus
         } else {

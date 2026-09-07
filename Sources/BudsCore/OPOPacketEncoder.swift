@@ -83,4 +83,13 @@ public struct OPOPacketEncoder {
         sequence &+= 1
         return sequence
     }
+
+    public mutating func encodeCustomEqualizerQuery() -> [UInt8] {
+        BudsProtocol.makeFrame(0, 0, 0x22, 0x01, sequence: nextSequence(), payload: [])
+    }
+
+    public mutating func encodeSetCustomEqualizer(_ curve: CustomEqualizer, action: CustomEQAction = .update) -> [UInt8]? {
+        guard let payload = curve.payload(for: action) else { return nil }
+        return BudsProtocol.makeFrame(0, 0, 0x18, 0x04, sequence: nextSequence(), payload: payload)
+    }
 }

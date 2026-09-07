@@ -33,8 +33,13 @@ public enum QueryCommandResult {
     case failure(QueryCommandFailure)
 }
 
-/// Serialises query commands without making assumptions about any device-specific opcode.
-/// Concrete query packets and response matchers are supplied only after protocol capture.
+public enum WriteDispatchResult: Equatable {
+    case sent
+    case failed
+    case cancelled
+}
+
+/// Paces queries and single-send writes; only captured query/response pairs are used.
 public final class CommandQueue {
     public typealias Completion = (QueryCommandResult) -> Void
     public typealias Scheduler = (TimeInterval, @escaping () -> Void) -> Void
@@ -42,7 +47,11 @@ public final class CommandQueue {
     private struct QueuedQuery {
         let id: UInt64
         let command: PendingCommand
-        let completion: Completion
+        var completion: Completion
+        var writeCompletion: ((WriteDispatchResult) -> Void)? = nil
+        var urgent = false
+        var coalescingKey: UInt16? = nil
+        var writeEpoch: UInt64 = 0
         var attempts = 0
     }
 
@@ -54,6 +63,9 @@ public final class CommandQueue {
     private var active: QueuedQuery?
     private var isPacing = false
     private var nextID: UInt64 = 0
+    private var generation: UInt64 = 0
+    private var writeEpoch: UInt64 = 0
+    private var urgentBurst = 0
 
     public convenience init(transport: any ControlTransport,
                             pacing: TimeInterval = 0.2) {
@@ -79,32 +91,48 @@ public final class CommandQueue {
         transport.send(encoder.encodeHello())
     }
 
-    /// Set commands deliberately bypass query retry. A repeated hardware write can apply
-    /// the same user action twice, so its device report remains the only confirmation.
+    /// True means accepted into the send lane, not delivered or confirmed by the device.
+    /// Writes share pacing with reads and are never retried.
     @discardableResult
     public func setNoiseMode(_ mode: NoiseMode, level: ANCLevel?,
-                             profile: BudsProtocol.Profile) -> Bool {
+                             profile: BudsProtocol.Profile,
+                             dispatched: @escaping (WriteDispatchResult) -> Void = { _ in }) -> Bool {
         guard let packet = encoder.encodeSetNoiseMode(mode, level: level, profile: profile)
         else { return false }
-        return transport.send(packet)
+        return enqueueWrite(packet, dispatched: dispatched)
     }
 
     @discardableResult
     public func setEqualizer(_ preset: EQPreset,
-                             profile: BudsProtocol.Profile) -> Bool {
+                             profile: BudsProtocol.Profile,
+                             dispatched: @escaping (WriteDispatchResult) -> Void = { _ in }) -> Bool {
         guard let packet = encoder.encodeSetEqualizer(preset, profile: profile) else {
             return false
         }
-        return transport.send(packet)
+        return enqueueWrite(packet, dispatched: dispatched)
     }
 
     @discardableResult
     public func setGameMode(_ enabled: Bool,
-                            profile: BudsProtocol.Profile) -> Bool {
+                            profile: BudsProtocol.Profile,
+                            dispatched: @escaping (WriteDispatchResult) -> Void = { _ in }) -> Bool {
         guard let packet = encoder.encodeSetGameMode(enabled, profile: profile) else {
             return false
         }
-        return transport.send(packet)
+        return enqueueWrite(packet, dispatched: dispatched)
+    }
+
+    private func enqueueWrite(_ packet: [UInt8],
+                              dispatched: @escaping (WriteDispatchResult) -> Void) -> Bool {
+        guard transport.isOpen else { return false }
+        writeEpoch &+= 1
+        nextID &+= 1
+        waiting.append(QueuedQuery(id: nextID,
+            command: PendingCommand(packet: packet, sequence: encoder.sequence,
+                                    retryLimit: 0, responseMatcher: { _ in false }),
+            completion: { _ in }, writeCompletion: dispatched, urgent: true))
+        startNextIfPossible()
+        return true
     }
 
     /// Enqueues the Air5 read-only battery request using the same sequence stream as the
@@ -125,7 +153,7 @@ public final class CommandQueue {
             responseMatcher: {
                 $0.opcode == BudsProtocol.opcodeBatteryResponse
                     && $0.sequence == sequence
-            }), completion: completion)
+            }), coalescingKey: 0x0601, completion: completion)
         return true
     }
 
@@ -147,7 +175,7 @@ public final class CommandQueue {
             responseMatcher: {
                 $0.opcode == BudsProtocol.opcodeDeviceInformationResponse
                     && $0.sequence == sequence
-            }), completion: completion)
+            }), coalescingKey: 0x0501, completion: completion)
         return true
     }
 
@@ -155,6 +183,7 @@ public final class CommandQueue {
     public func enqueueEqualizerQuery(
         profile: BudsProtocol.Profile,
         timeout: TimeInterval = 1,
+        verification: Bool = false,
         completion: @escaping Completion
     ) -> Bool {
         guard let packet = encoder.encodeEqualizerQuery(profile: profile) else { return false }
@@ -167,7 +196,8 @@ public final class CommandQueue {
             responseMatcher: {
                 $0.opcode == BudsProtocol.opcodeEqualizerResponse
                     && $0.sequence == sequence
-            }), completion: completion)
+            }), urgent: verification, coalescingKey: verification ? nil : 0x0f01,
+            completion: completion)
         return true
     }
 
@@ -175,6 +205,7 @@ public final class CommandQueue {
     public func enqueueGameModeQuery(
         profile: BudsProtocol.Profile,
         timeout: TimeInterval = 1,
+        verification: Bool = false,
         completion: @escaping Completion
     ) -> Bool {
         guard let packet = encoder.encodeGameModeQuery(profile: profile) else { return false }
@@ -187,15 +218,34 @@ public final class CommandQueue {
             responseMatcher: {
                 $0.opcode == BudsProtocol.opcodeGameModeResponse
                     && $0.sequence == sequence
-            }), completion: completion)
+            }), urgent: verification, coalescingKey: verification ? nil : 0x0d01,
+            completion: completion)
         return true
     }
 
     public func enqueue(_ command: PendingCommand,
+                        urgent: Bool = false,
+                        coalescingKey: UInt16? = nil,
                         completion: @escaping Completion) {
+        if let key = coalescingKey {
+            if let current = active, current.coalescingKey == key,
+               current.writeEpoch == writeEpoch {
+                let earlier = current.completion
+                active?.completion = { earlier($0); completion($0) }
+                return
+            }
+            if let index = waiting.firstIndex(where: {
+                $0.coalescingKey == key && $0.writeEpoch == writeEpoch
+            }) {
+                let earlier = waiting[index].completion
+                waiting[index].completion = { earlier($0); completion($0) }
+                return
+            }
+        }
         nextID &+= 1
         waiting.append(QueuedQuery(
-            id: nextID, command: command, completion: completion))
+            id: nextID, command: command, completion: completion,
+            urgent: urgent, coalescingKey: coalescingKey, writeEpoch: writeEpoch))
         startNextIfPossible()
     }
 
@@ -209,18 +259,43 @@ public final class CommandQueue {
     }
 
     public func cancelAll() {
+        generation &+= 1
         let cancelled = ([active].compactMap { $0 } + waiting)
         active = nil
         waiting.removeAll()
         isPacing = false
+        urgentBurst = 0
         for query in cancelled {
-            query.completion(.failure(.cancelled))
+            if let dispatched = query.writeCompletion {
+                dispatched(.cancelled)
+            } else {
+                query.completion(.failure(.cancelled))
+            }
         }
+    }
+
+    public func setCustomEqualizer(_ curve: CustomEqualizer, action: CustomEQAction = .update,
+                                   dispatched: @escaping (WriteDispatchResult) -> Void) -> Bool {
+        guard let packet = encoder.encodeSetCustomEqualizer(curve, action: action) else { return false }
+        return enqueueWrite(packet, dispatched: dispatched)
+    }
+
+    public func enqueueCustomEqualizerQuery(verification: Bool = false, completion: @escaping Completion) {
+        let packet = encoder.encodeCustomEqualizerQuery()
+        let sequence = encoder.sequence
+        enqueue(PendingCommand(packet: packet, sequence: sequence, retryLimit: 1,
+            responseMatcher: { $0.opcode == 0x2281 && $0.sequence == sequence }),
+            urgent: verification, coalescingKey: verification ? nil : 0x2201, completion: completion)
     }
 
     private func startNextIfPossible() {
         guard active == nil, !isPacing, !waiting.isEmpty else { return }
-        active = waiting.removeFirst()
+        let urgentIndex = waiting.firstIndex(where: { $0.urgent })
+        let backgroundIndex = waiting.firstIndex(where: { !$0.urgent })
+        guard let index = urgentBurst < 3 ? (urgentIndex ?? backgroundIndex)
+            : (backgroundIndex ?? urgentIndex) else { return }
+        active = waiting.remove(at: index)
+        urgentBurst = active?.urgent == true ? urgentBurst + 1 : 0
         sendActive()
     }
 
@@ -229,7 +304,15 @@ public final class CommandQueue {
         query.attempts += 1
         active = query
 
-        guard transport.send(query.command.packet) else {
+        let sent = transport.send(query.command.packet)
+        // A transport failure can synchronously cancel the entire lane.
+        guard active?.id == query.id else { return }
+        if let dispatched = query.writeCompletion {
+            active = nil
+            beginPacing { dispatched(sent ? .sent : .failed) }
+            return
+        }
+        guard sent else {
             finishActive(with: .failure(.sendFailed))
             return
         }
@@ -258,13 +341,18 @@ public final class CommandQueue {
     private func finishActive(with result: QueryCommandResult) {
         guard let query = active else { return }
         active = nil
+        beginPacing { query.completion(result) }
+    }
+
+    private func beginPacing(_ completion: () -> Void) {
         // Set the gate before invoking client code. A completion may enqueue the next
         // query synchronously, and it must not bypass the pacing interval by re-entry.
         isPacing = true
-        query.completion(result)
+        let generation = self.generation
+        completion()
 
         schedule(pacing) { [weak self] in
-            guard let self else { return }
+            guard let self, self.generation == generation else { return }
             self.isPacing = false
             self.startNextIfPossible()
         }

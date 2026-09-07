@@ -2,6 +2,40 @@ import XCTest
 @testable import BudsCore
 
 final class ProtocolTests: XCTestCase {
+    func testPhoneCreatedEQListWithVariableLengthHeaderAcrossEverySplit() throws {
+        // Actual Air5 response, 2026-09-07: three curves, outer length 8d 01 = 141.
+        let raw = bytes("aa 8d 01 00 00 22 81 0e 86 00 00 03 00 fa 06 04 06 e6 b5 8b e8 af 95 0a 1f 00 02 3e 00 00 7d 00 00 fa 00 00 f4 01 00 e8 03 00 d0 07 00 a0 0f 00 40 1f 00 80 3e 00 00 fa 06 05 0b e8 87 aa e5 ae 9a e4 b9 89 20 32 0a 1f 00 00 3e 00 00 7d 00 00 fa 00 00 f4 01 00 e8 03 00 d0 07 00 a0 0f 00 40 1f 00 80 3e 00 00 fa 06 06 07 e8 87 aa e8 a8 82 31 0a 1f 00 00 3e 00 00 7d 00 00 fa 00 00 f4 01 00 e8 03 00 d0 07 00 a0 0f 00 40 1f 00 80 3e 00")
+        for split in 0...raw.count {
+            var buffer = Array(raw.prefix(split))
+            var frames = BudsProtocol.drainFrames(from: &buffer)
+            buffer += raw.dropFirst(split)
+            frames += BudsProtocol.drainFrames(from: &buffer)
+            XCTAssertEqual(frames.count, 1, "split \(split)")
+            let frame = try XCTUnwrap(frames.first)
+            XCTAssertEqual(frame.opcode, 0x2281)
+            XCTAssertEqual(frame.sequence, 0x0e)
+            XCTAssertEqual(frame.raw, raw)
+            let curves = try XCTUnwrap(CustomEqualizer.decodeList(frame.payload))
+            XCTAssertEqual(curves.map(\.name), ["测试", "自定义 2", "自訂1"])
+            XCTAssertEqual(curves.map(\.id), [4, 5, 6])
+            XCTAssertTrue(buffer.isEmpty)
+        }
+    }
+
+    func testFrameLengthBoundaryAndFollowingShortFrame() throws {
+        for count in [120, 121, 134, 248] {
+            let payload = Array(repeating: UInt8(0), count: count)
+            let raw = BudsProtocol.makeFrame(0, 0, 0x22, 0x81, sequence: 7, payload: payload)
+            XCTAssertEqual(raw[1] & 0x80, count == 120 ? 0 : 0x80)
+            let short = BudsProtocol.makeFrame(0, 0, 0x0f, 0x81, sequence: 8, payload: [0, 0])
+            var buffer = raw + short
+            let frames = BudsProtocol.drainFrames(from: &buffer)
+            XCTAssertEqual(frames.map(\.sequence), [7, 8])
+            XCTAssertEqual(frames.first?.payload, payload)
+            XCTAssertTrue(buffer.isEmpty)
+        }
+    }
+
     private func bytes(_ string: String) -> [UInt8] {
         string.split(separator: " ").compactMap { UInt8($0, radix: 16) }
     }
@@ -177,8 +211,8 @@ final class ProtocolTests: XCTestCase {
         let badGame = try frame("aa 0b 00 00 0d 81 0e 04 00 00 01 06 02")
         let shortGame = try frame("aa 09 00 00 0d 81 0e 02 00 00 ff")
 
-        XCTAssertTrue(BudsProtocol.interpretEqualizerResponse(
-            badEQ, profile: .encoAir5Pro).isEmpty)
+        XCTAssertEqual(BudsProtocol.interpretEqualizerResponse(
+            badEQ, profile: .encoAir5Pro), [.unknownEqualizer(0xff)])
         XCTAssertTrue(BudsProtocol.interpretGameModeResponse(
             badGame, profile: .encoAir5Pro).isEmpty)
         XCTAssertTrue(BudsProtocol.interpretGameModeResponse(
@@ -217,7 +251,7 @@ final class ProtocolTests: XCTestCase {
             try decode(
                 "aa 0f 00 00 04 02 5a 08 00 02 03 01 05 02 07 03 04",
                 profile: profile),
-            [.placement(.left, .inUse)])
+            [.placement(.left, .inUse), .unknownPlacement(.right, 0x07)])
     }
 
     func testFrameDecoderHandlesFragmentationCoalescingAndResync() {

@@ -2,23 +2,27 @@ import BudsCore
 import Foundation
 import IOBluetooth
 
-final class RFCOMMTransport: NSObject, ControlTransport, IOBluetoothRFCOMMChannelDelegate {
-    var eventHandler: ((ControlTransportEvent) -> Void)?
-    private(set) var isOpen = false
+final class RFCOMMTransport: NSObject, ControlTransport {
+    var eventHandler: ((ControlTransportEvent) -> Void)? {
+        get { lifecycle.eventHandler }
+        set { lifecycle.eventHandler = newValue }
+    }
+    var isOpen: Bool { lifecycle.isOpen }
 
     private let device: IOBluetoothDevice
     private let tracing: Bool
-    private var channel: IOBluetoothRFCOMMChannel?
-    private var isOpening = false
+    private let rawTracing: Bool
+    private let lifecycle = RFCOMMLifecycle<IOBluetoothRFCOMMChannel>()
+    private var channelDelegate: ChannelDelegate?
 
     init(device: IOBluetoothDevice, tracing: Bool) {
         self.device = device
         self.tracing = tracing
+        self.rawTracing = ProcessInfo.processInfo.environment["BUDSBAR_TRACE_RAW"] == "1"
     }
 
     func open() {
-        guard channel == nil, !isOpening else { return }
-        isOpening = true
+        guard let generation = lifecycle.beginOpen() else { return }
 
         DispatchQueue.global(qos: .userInitiated).async {
             self.device.performSDPQuery(nil)
@@ -34,85 +38,117 @@ final class RFCOMMTransport: NSObject, ControlTransport, IOBluetoothRFCOMMChanne
 
             var channelID: BluetoothRFCOMMChannelID = 0
             guard let record else {
-                DispatchQueue.main.async { self.fail("未找到耳机控制服务") }
+                DispatchQueue.main.async {
+                    self.lifecycle.discoveryFailed("未找到耳机控制服务", generation: generation)
+                }
                 return
             }
             guard record.getRFCOMMChannelID(&channelID) == kIOReturnSuccess else {
-                DispatchQueue.main.async { self.fail("耳机控制通道不可用") }
+                DispatchQueue.main.async {
+                    self.lifecycle.discoveryFailed("耳机控制通道不可用", generation: generation)
+                }
                 return
             }
 
             DispatchQueue.main.async {
-                defer { self.isOpening = false }
+                guard self.lifecycle.acceptsDiscovery(generation) else { return }
+                let delegate = ChannelDelegate(owner: self, generation: generation)
+                self.channelDelegate = delegate
                 var opened: IOBluetoothRFCOMMChannel?
                 let result = self.device.openRFCOMMChannelAsync(
-                    &opened, withChannelID: channelID, delegate: self)
-                if result == kIOReturnSuccess {
-                    self.channel = opened
+                    &opened, withChannelID: channelID, delegate: delegate)
+                if result == kIOReturnSuccess, let opened {
+                    self.lifecycle.attach(opened, generation: generation)
                 } else {
-                    self.eventHandler?(.failed(TransportError(
-                        "控制通道忙（IOReturn \(result)）")))
+                    self.lifecycle.discoveryFailed(
+                        "控制通道忙（IOReturn \(result)）", generation: generation)
                 }
             }
         }
     }
 
     func close() {
+        // Invalidate before close(), which can itself cause delegate callbacks.
+        let channel = lifecycle.close()
         channel?.close()
-        channel = nil
-        isOpening = false
-        isOpen = false
+        channelDelegate = nil
     }
 
     @discardableResult
     func send(_ packet: [UInt8]) -> Bool {
-        guard let channel, isOpen else { return false }
-        if tracing {
-            AppLogger.transport.debug("TX \(BudsProtocol.hex(packet), privacy: .public)")
+        guard let channel = lifecycle.channel else { return false }
+        return lifecycle.send(packet, mtu: Int(channel.getMTU())) { packet in
+            trace(packet, direction: "TX")
+            var bytes = packet
+            // SDK success means buffered, not an earbud acknowledgement.
+            let result = bytes.withUnsafeMutableBytes { raw in
+                channel.writeAsync(raw.baseAddress, length: UInt16(raw.count), refcon: nil)
+            }
+            return result == kIOReturnSuccess ? nil : "写入失败（IOReturn \(result)）"
         }
-        var bytes = packet
-        let result = bytes.withUnsafeMutableBytes { raw in
-            channel.writeAsync(raw.baseAddress, length: UInt16(raw.count), refcon: nil)
-        }
-        if result != kIOReturnSuccess {
-            eventHandler?(.failed(TransportError("写入失败（IOReturn \(result)）")))
-            return false
-        }
-        return true
     }
 
-    func rfcommChannelOpenComplete(_ channel: IOBluetoothRFCOMMChannel!, status error: IOReturn) {
-        isOpening = false
-        guard error == kIOReturnSuccess else {
-            self.channel = nil
-            eventHandler?(.failed(TransportError(
-                "打开控制通道失败（IOReturn \(error)）")))
-            return
+    // An SDK channel object may be reused. Each delegate retains the opening's token,
+    // so queued callbacks cannot inherit a newer connection's generation.
+    private final class ChannelDelegate: NSObject, IOBluetoothRFCOMMChannelDelegate {
+        private weak var owner: RFCOMMTransport?
+        private let generation: Int
+
+        init(owner: RFCOMMTransport, generation: Int) {
+            self.owner = owner
+            self.generation = generation
         }
-        self.channel = channel
-        isOpen = true
-        eventHandler?(.opened)
-    }
 
-    func rfcommChannelData(_ channel: IOBluetoothRFCOMMChannel!,
-                           data dataPointer: UnsafeMutableRawPointer!,
-                           length dataLength: Int) {
-        let chunk = Array(UnsafeBufferPointer(
-            start: dataPointer.assumingMemoryBound(to: UInt8.self), count: dataLength))
-        if tracing {
-            AppLogger.transport.debug("RX \(BudsProtocol.hex(chunk), privacy: .public)")
+        private func deliver(_ callback: @escaping (RFCOMMTransport) -> Void) {
+            DispatchQueue.main.async { [weak owner, generation] in
+                guard let owner else { return }
+                owner.lifecycle.deliver(generation: generation) { callback(owner) }
+            }
         }
-        eventHandler?(.bytes(chunk))
+
+        func rfcommChannelOpenComplete(_ channel: IOBluetoothRFCOMMChannel!, status error: IOReturn) {
+            guard let channel else { return }
+            // Enqueue even callbacks during openRFCOMMChannelAsync, so attach runs first.
+            deliver { owner in
+                owner.lifecycle.opened(channel, error: error == kIOReturnSuccess
+                    ? nil : "打开控制通道失败（IOReturn \(error)）")
+            }
+        }
+
+        func rfcommChannelData(_ channel: IOBluetoothRFCOMMChannel!,
+                               data dataPointer: UnsafeMutableRawPointer!,
+                               length dataLength: Int) {
+            guard let channel, let dataPointer, dataLength > 0 else { return }
+            // Consume the SDK data pointer inside the callback, before dispatch.
+            let chunk = Array(UnsafeBufferPointer(
+                start: dataPointer.assumingMemoryBound(to: UInt8.self), count: dataLength))
+            deliver { owner in
+                guard owner.lifecycle.acceptsData(from: channel) else { return }
+                owner.trace(chunk, direction: "RX")
+                owner.lifecycle.received(chunk, from: channel)
+            }
+        }
+
+        func rfcommChannelClosed(_ channel: IOBluetoothRFCOMMChannel!) {
+            guard let channel else { return }
+            deliver { $0.lifecycle.closed(channel) }
+        }
+
+        func rfcommChannelWriteComplete(_ channel: IOBluetoothRFCOMMChannel!,
+                                        refcon: UnsafeMutableRawPointer!, status error: IOReturn) {
+            guard let channel else { return }
+            deliver { owner in
+                owner.lifecycle.writeCompleted(channel, error: error == kIOReturnSuccess
+                    ? nil : "异步写入失败（IOReturn \(error)）")
+            }
+        }
     }
 
-    func rfcommChannelClosed(_ channel: IOBluetoothRFCOMMChannel!) {
-        self.channel = nil
-        isOpen = false
-        eventHandler?(.closed)
-    }
-
-    private func fail(_ message: String) {
-        isOpening = false
-        eventHandler?(.failed(TransportError(message)))
+    private func trace(_ bytes: [UInt8], direction: String) {
+        guard tracing else { return }
+        let line = RFCOMMTraceFormatter.line(
+            bytes, timestamp: Date().ISO8601Format(), generation: lifecycle.generation,
+            direction: direction, includeRaw: rawTracing)
+        AppLogger.transport.debug("\(line, privacy: .public)")
     }
 }

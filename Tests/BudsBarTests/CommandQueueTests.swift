@@ -50,6 +50,25 @@ final class CommandQueueTests: XCTestCase {
             responseMatcher: { $0.opcode == opcode })
     }
 
+    func testCancelledPacingCannotReleaseNextConnectionEarly() {
+        let transport = FakeTransport()
+        let clock = TestClock()
+        let queue = CommandQueue(transport: transport, pacing: 0.2,
+                                 scheduler: clock.schedule)
+        queue.enqueue(command(1)) { _ in }
+        XCTAssertTrue(queue.receive(frame("aa 07 00 00 06 81 10 00 00")))
+        clock.advance(by: 0.1)
+        queue.cancelAll()
+        queue.enqueue(command(2)) { _ in }
+        XCTAssertTrue(queue.receive(frame("aa 07 00 00 06 81 10 00 00")))
+        queue.enqueue(command(3)) { _ in }
+
+        clock.advance(by: 0.11) // old pacing fired, new pacing still pending
+        XCTAssertEqual(transport.sent, [[1], [2]])
+        clock.advance(by: 0.1)
+        XCTAssertEqual(transport.sent, [[1], [2], [3]])
+    }
+
     func testQueriesAreSerialAndPacedAfterResponse() {
         let transport = FakeTransport()
         let scheduler = ManualScheduler()
@@ -67,6 +86,54 @@ final class CommandQueueTests: XCTestCase {
 
         scheduler.runNext()
         XCTAssertEqual(transport.sent, [[0x01], [0x02]])
+    }
+
+    func testWriteWaitsForActiveQueryAndPacing() {
+        let transport = FakeTransport()
+        let clock = TestClock()
+        let queue = CommandQueue(transport: transport, scheduler: clock.schedule)
+        queue.enqueue(command(1)) { _ in }
+        XCTAssertTrue(queue.setNoiseMode(.transparency, level: nil, profile: .encoAir5Pro))
+        XCTAssertEqual(transport.sent, [[1]])
+        XCTAssertTrue(queue.receive(frame("aa 07 00 00 06 81 10 00 00")))
+        clock.advance(by: 0.19)
+        XCTAssertEqual(transport.sent, [[1]])
+        clock.advance(by: 0.02)
+        XCTAssertEqual(transport.sent.count, 2)
+        clock.advance(by: 5)
+        XCTAssertEqual(transport.sent.count, 2)
+    }
+
+    func testUrgentWorkYieldsAfterThreeEntries() {
+        let transport = FakeTransport()
+        let clock = TestClock()
+        let queue = CommandQueue(transport: transport, scheduler: clock.schedule)
+        queue.enqueue(command(1)) { _ in }
+        queue.enqueue(command(2)) { _ in }
+        for value: UInt8 in 3...6 { queue.enqueue(command(value), urgent: true) { _ in } }
+        for _ in 0..<5 {
+            XCTAssertTrue(queue.receive(frame("aa 07 00 00 06 81 10 00 00")))
+            clock.advance(by: 0.2)
+        }
+        XCTAssertEqual(transport.sent, [[1], [3], [4], [5], [2], [6]])
+    }
+
+    func testDuplicateBackgroundReadSharesResponseButNotAcrossWrite() {
+        let transport = FakeTransport()
+        let clock = TestClock()
+        let queue = CommandQueue(transport: transport, scheduler: clock.schedule)
+        var completions = 0
+        queue.enqueueEqualizerQuery(profile: .encoAir5Pro) { _ in completions += 1 }
+        queue.enqueueEqualizerQuery(profile: .encoAir5Pro) { _ in completions += 1 }
+        XCTAssertEqual(transport.sent.count, 1)
+        XCTAssertTrue(queue.setEqualizer(.bass, profile: .encoAir5Pro))
+        queue.enqueueEqualizerQuery(profile: .encoAir5Pro) { _ in completions += 1 }
+        XCTAssertTrue(queue.receive(frame("aa 09 00 00 0f 81 01 02 00 00 00")))
+        XCTAssertEqual(completions, 2)
+        clock.advance(by: 0.4)
+        XCTAssertEqual(transport.sent.count, 3)
+        XCTAssertEqual(Array(transport.sent[1][4...5]), [6, 4])
+        XCTAssertEqual(Array(transport.sent[2][4...5]), [15, 1])
     }
 
     func testCompletionCannotEnqueueAroundPacingGate() {

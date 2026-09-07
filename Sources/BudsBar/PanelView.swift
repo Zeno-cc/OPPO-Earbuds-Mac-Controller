@@ -37,9 +37,10 @@ struct PanelView: View {
                     contrast == .increased ? 0.28 : PanelDesignTokens.dividerOpacity)
 
             contentViewport
+            RepositoryFooter()
         }
         .frame(width: PanelDesignTokens.width)
-        .frame(maxHeight: PanelDesignTokens.maximumHeight, alignment: .top)
+        .frame(maxHeight: PanelDesignTokens.maximumHeight + RepositoryDestination.footerHeight, alignment: .top)
         .background {
             if reduceTransparency {
                 Color(nsColor: .windowBackgroundColor)

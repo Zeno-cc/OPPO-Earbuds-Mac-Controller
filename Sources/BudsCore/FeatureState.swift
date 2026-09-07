@@ -8,6 +8,13 @@ public enum FeatureState<Value: Equatable>: Equatable {
     case failed(String)
 }
 
+/// Reading a feature is independent of its last observed value and a user's write.
+public enum FeatureRefreshState: Equatable {
+    case idle
+    case loading
+    case failed(String)
+}
+
 public enum DeviceInformationSource: Equatable {
     /// Stable information selected by the device profile rather than read from the buds.
     case profileMetadata

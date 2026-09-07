@@ -1,8 +1,91 @@
 import BudsCore
 import XCTest
+import SwiftUI
 @testable import BudsBar
 
 final class PresentationTests: XCTestCase {
+    func testRepositoryFooterOpensOnlyTheProjectPage() {
+        XCTAssertEqual(RepositoryDestination.url.absoluteString,
+                       "https://github.com/Zeno-cc/OPPO-Earbuds-Mac-Controller")
+        XCTAssertEqual(RepositoryDestination.footerHeight, 54)
+    }
+
+    @MainActor
+    func testRepositoryFooterRendersAtPanelWidthInBothAppearances() throws {
+        for scheme in [ColorScheme.light, .dark] {
+            let view = RepositoryFooter().frame(width: PanelDesignTokens.width)
+                .background(scheme == .light ? Color.white : Color.black)
+                .environment(\.colorScheme, scheme)
+            let renderer = ImageRenderer(content: view)
+            renderer.scale = 2
+            let image = try XCTUnwrap(renderer.cgImage)
+            XCTAssertEqual(image.width, Int(PanelDesignTokens.width * 2))
+            XCTAssertEqual(image.height, Int(RepositoryDestination.footerHeight * 2))
+            if let directory = ProcessInfo.processInfo.environment["EQ_FOOTER_PREVIEW_DIR"] {
+                let png = try XCTUnwrap(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]))
+                try png.write(to: URL(fileURLWithPath: directory).appendingPathComponent("footer-\(scheme).png"))
+            }
+        }
+    }
+
+    @MainActor
+    func testEQSliderUsesThirteenDiscreteVerticalSteps() {
+        let slider = EQBandSlider.makeSlider()
+        XCTAssertTrue(slider.isVertical)
+        XCTAssertEqual(slider.minValue, -6)
+        XCTAssertEqual(slider.maxValue, 6)
+        XCTAssertEqual(slider.numberOfTickMarks, 13)
+        XCTAssertTrue(slider.allowsTickMarkValuesOnly)
+        XCTAssertTrue(slider.isContinuous)
+    }
+
+    func testEQGainLabelsAndFrequencyLabelsAreCompact() {
+        XCTAssertEqual(EQEditorDesign.gainLabel(6), "+6")
+        XCTAssertEqual(EQEditorDesign.gainLabel(-6), "−6")
+        XCTAssertEqual(EQEditorDesign.gainLabel(0), "0")
+        XCTAssertEqual(CustomEqualizer.bandFrequencies.map(EQEditorDesign.frequencyLabel),
+                       ["31", "62", "125", "250", "500", "1k", "2k", "4k", "8k", "16k"])
+    }
+
+    @MainActor
+    func testCustomEQHostDoesNotDriveWindowSizeFromChangingContent() {
+        _ = NSApplication.shared
+        let host = CustomEqualizerPanelController.makeHost(rootView: Text("正在读取…"))
+        XCTAssertTrue(host.sizingOptions.isEmpty,
+                      "Dynamic EQ content must not create window/intrinsic-size feedback")
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 350, height: 660),
+                            styleMask: [.titled, .closable, .utilityWindow],
+                            backing: .buffered, defer: false)
+        panel.isReleasedWhenClosed = false
+        panel.contentViewController = host
+        panel.setContentSize(NSSize(width: 350, height: 660))
+        let originalSize = panel.frame.size
+        for text in ["正在读取…", String(repeating: "频段 0 dB\n", count: 10), "读取失败"] {
+            host.rootView = Text(text)
+            panel.contentView?.layoutSubtreeIfNeeded()
+            panel.layoutIfNeeded()
+            XCTAssertEqual(panel.frame.size, originalSize)
+        }
+        panel.close()
+    }
+
+    func testPopoverContentNeverPresentsModalSheets() throws {
+        // Architecture regression: a sheet on the status NSPopover can leave its
+        // controls blocked when the popover closes. Editors must use independent panels.
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let sources = root.appendingPathComponent("Sources/BudsBar")
+        let files = try XCTUnwrap(FileManager.default.enumerator(at: sources,
+            includingPropertiesForKeys: nil))
+        let modal = try NSRegularExpression(pattern: #"\.(sheet|fullScreenCover)\s*\("#)
+        for case let file as URL in files where file.pathExtension == "swift" {
+            let source = try String(contentsOf: file, encoding: .utf8)
+            XCTAssertEqual(modal.numberOfMatches(in: source,
+                range: NSRange(source.startIndex..., in: source)), 0,
+                "Use a non-modal NSPanel, not a sheet in \(file.lastPathComponent)")
+        }
+    }
+
     func testDeviceInformationRefreshFeedbackAdvancesOnlyForEnqueuedRequest() {
         XCTAssertEqual(
             DeviceInformationRefreshFeedback.nextTrigger(current: 2, didEnqueue: true),
@@ -107,6 +190,16 @@ final class PresentationTests: XCTestCase {
         XCTAssertEqual(presentation.items.map(\.kind), [.combined])
         XCTAssertEqual(presentation.items.first?.label, "耳机")
         XCTAssertNil(presentation.menuBarPercentage)
+    }
+
+    func testEarStateIsIndependentOfBatteryAndDoesNotClaimWornOrCharging() {
+        let state = EarStatePresentation(placement: EarbudsPlacementState(
+            left: .inCase, right: .inUse))
+        XCTAssertEqual(state.left, "左耳 · 盒内")
+        XCTAssertEqual(state.right, "右耳 · 盒外")
+        let unknown = EarStatePresentation(placement: EarbudsPlacementState())
+        XCTAssertNil(unknown.left)
+        XCTAssertNil(unknown.right)
     }
 
     func testMenuBarBatteryRequiresTwoIndependentValidReadings() {

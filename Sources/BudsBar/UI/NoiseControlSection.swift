@@ -53,6 +53,12 @@ struct NoiseControlSection: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            if let message = buds.operations[.noise]?.phase.message {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .animation(
             MotionTokens.state(reduceMotion: reduceMotion),
@@ -61,6 +67,7 @@ struct NoiseControlSection: View {
 
     private var canSwitchModes: Bool {
         buds.isControlChannelOpen && buds.supportsNoiseControl
+            && buds.pendingMode == nil && buds.pendingANCLevel == nil
     }
 
     private var modeSwitchingNote: String? {
