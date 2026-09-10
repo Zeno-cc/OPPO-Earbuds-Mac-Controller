@@ -22,3 +22,7 @@
 - `swift test -c release`：141 个测试通过。
 - `bash build.sh release` 与 `bash scripts/verify-app-bundle.sh`：通过。
 - 发布包使用项目现有的 ad-hoc 签名；首次打开若被 macOS 拦截，请按 README 中的 `xattr` 命令处理。
+
+## 证据边界
+
+软件回归和 Mac 本地方案 UI 已通过验证。手机参与的跨端冲突/失败矩阵需要 Android 端 HCI 日志与现场操作，本包不把这部分未取得的物理证据宣称为已完成能力。
