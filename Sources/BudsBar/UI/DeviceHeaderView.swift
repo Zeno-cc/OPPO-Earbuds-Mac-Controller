@@ -256,7 +256,7 @@ private struct MoreOptionsView: View {
 
                 inspectorGroup("关于") {
                     HStack {
-                        Button("v1.3 新功能") { buds.showWhatsNew() }
+                        Button("v1.4 新功能") { buds.showWhatsNew() }
                             .buttonStyle(.borderless)
                         Spacer()
                         Button("退出") { NSApplication.shared.terminate(nil) }

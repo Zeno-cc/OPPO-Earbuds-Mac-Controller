@@ -8,16 +8,16 @@ struct WhatsNewView: View {
             HStack {
                 EarbudsArtworkView(size: .hero)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("v1.3 新功能")
+                    Text("v1.4 新功能")
                         .font(.title2.weight(.semibold))
-                    Text("更安静、更清楚的连接体验")
+                    Text("更自由的音效，更清楚的设备状态")
                         .foregroundStyle(.secondary)
                 }
             }
 
-            feature("连接状态浮窗", symbol: "rectangle.on.rectangle", detail: "连接、重连和意外断开时给出克制提示。")
-            feature("菜单栏状态", symbol: "menubar.rectangle", detail: "可选显示真实左右耳中的最低电量。")
-            feature("确认后的动效", symbol: "waveform", detail: "电量、降噪和音效只跟随耳机确认的状态。")
+            feature("自定义均衡器", symbol: "slider.vertical.3", detail: "创建、编辑、启用和删除耳机曲线，完整读回后才确认。")
+            feature("Mac 本地方案", symbol: "internaldrive", detail: "离线保存和载入曲线，明确应用后才写入耳机。")
+            feature("盒内 / 盒外状态", symbol: "airpodspro", detail: "显示已验证的位置状态，不把盒外推断为已佩戴。")
 
             HStack {
                 Spacer()

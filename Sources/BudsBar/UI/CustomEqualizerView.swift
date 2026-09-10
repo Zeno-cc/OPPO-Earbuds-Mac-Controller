@@ -57,6 +57,14 @@ struct CustomEqualizerView: View {
     @State private var confirmDelete = false
     @State private var submitted: (CustomEQAction, CustomEqualizer, Set<UInt8>)?
     @State private var rejection: String?
+    @State private var localSchemes: [LocalEqualizerScheme] = []
+    @State private var savedScheme: LocalEqualizerScheme?
+    @State private var localError: String?
+    private let localStore = LocalEqualizerStore()
+
+    private var savedLocally: Bool {
+        savedScheme.map { localSchemes.contains($0) && $0.name == name && $0.gains == draft } ?? false
+    }
 
     private var busy: Bool { buds.operations[.equalizer]?.phase.isPending == true }
     private var curves: [CustomEqualizer] {
@@ -96,6 +104,7 @@ struct CustomEqualizerView: View {
             .background(EQEditorDesign.surface)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .onAppear(perform: reloadLocalSchemes)
         .onChange(of: buds.customEqualizerFeature, initial: true) { _, state in
             if case .ready(let values) = state {
                 if let (action, target, ids) = submitted, buds.operations[.equalizer]?.phase == .confirmed {
@@ -140,7 +149,7 @@ struct CustomEqualizerView: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .disabled(busy || dirty)
+                        .disabled(busy || dirty || confirmDelete)
                         .help(curve.name)
                         .accessibilityAddTraits(curve.id == baseline?.id ? .isSelected : [])
                     }
@@ -150,16 +159,39 @@ struct CustomEqualizerView: View {
                             .padding(10).frame(maxWidth: .infinity, alignment: .leading)
                             .background(EQEditorDesign.selection, in: RoundedRectangle(cornerRadius: 9))
                     }
+                    Divider().padding(.vertical, 6)
+                    Text("Mac 本地方案").font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    ForEach(localSchemes) { scheme in
+                        HStack(spacing: 4) {
+                            Button { restoreLocal(scheme) } label: {
+                                Label(scheme.name, systemImage: "internaldrive")
+                                    .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .disabled(busy || dirty || confirmDelete)
+                            .help("载入为新增草稿，不会写入耳机")
+                            Button(role: .destructive) { deleteLocal(scheme) } label: {
+                                Image(systemName: "trash")
+                            }
+                            .accessibilityLabel("删除本地方案：\(scheme.name)")
+                            .help("仅删除 Mac 上的方案，保留当前草稿")
+                        }
+                        .buttonStyle(.borderless).padding(.vertical, 5)
+                    }
+                    if let localError {
+                        Text(localError).font(.caption).foregroundStyle(.red)
+                        Button("重读本地方案", action: reloadLocalSchemes)
+                    }
                 }
             }
             if dirty {
-                Text("保存或放弃修改后，可切换曲线。")
+                Text("应用或放弃草稿后，可切换曲线。本地保存不会应用到耳机。")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Button(action: newCurve) {
                 Label("新增曲线", systemImage: "plus").frame(maxWidth: .infinity)
             }
-            .controlSize(.large).disabled(!ready || dirty)
+            .controlSize(.large).disabled(busy || dirty || confirmDelete)
             Button { buds.refreshCustomEqualizer() } label: {
                 Label("重新读取", systemImage: "arrow.clockwise").frame(maxWidth: .infinity)
             }
@@ -180,9 +212,12 @@ struct CustomEqualizerView: View {
                         .accessibilityLabel("曲线名称")
                 }
                 Spacer(minLength: 0)
-                Label(dirty ? "未保存" : baseline?.isSelected == true ? "使用中" : "未启用",
-                      systemImage: dirty ? "pencil.circle" : baseline?.isSelected == true ? "checkmark.circle.fill" : "circle")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize()
+                VStack(alignment: .trailing, spacing: 4) {
+                    Label(dirty ? "草稿未应用" : stale ? "耳机状态待更新" : baseline?.isSelected == true ? "使用中" : "未启用",
+                          systemImage: dirty ? "pencil.circle" : !stale && baseline?.isSelected == true ? "checkmark.circle.fill" : "circle")
+                    if savedLocally { Text("本地已保存").foregroundStyle(Color.accentColor) }
+                }
+                .font(.caption).foregroundStyle(.secondary).fixedSize()
             }
             Divider()
             HStack {
@@ -237,24 +272,24 @@ struct CustomEqualizerView: View {
     private var emptyState: some View {
         VStack(spacing: 12) {
             Image(systemName: "slider.vertical.3").font(.system(size: 32)).foregroundStyle(.secondary)
-            Text(ready ? "从一条平直曲线开始" : "读取耳机的自定义曲线").font(.title3.weight(.semibold))
+            Text("从一条平直曲线开始").font(.title3.weight(.semibold))
             Text("十个频段，按你的听感调整。")
                 .font(.subheadline).foregroundStyle(.secondary)
-            if ready { Button("新增曲线", action: newCurve).controlSize(.large) }
+            Button("新增本地草稿", action: newCurve).controlSize(.large).disabled(busy)
         }
         .frame(maxWidth: .infinity).padding(.vertical, 100)
     }
 
     private var statusText: String {
         if busy { return "正在同步，等待耳机确认…" }
-        if !buds.isControlChannelOpen { return "耳机已断开，重新连接后再试。" }
+        if !buds.isControlChannelOpen { return "耳机已断开；可在 Mac 保存和载入方案，连接后再应用。" }
         if case .loading = buds.customEqualizerFeature { return "正在读取耳机曲线…" }
         if case .failed(let message) = buds.customEqualizerFeature { return message }
         if stale { return "耳机曲线已变化，请放弃草稿后重新选择。" }
         if (baseline != nil || creating) && target?.writePayload == nil { return "请输入曲线名称（UTF-8 最多 212 字节）。" }
         if let message = buds.operations[.equalizer]?.phase.message { return message }
         if let rejection, rejection != "已从耳机删除", rejection != "耳机读回已确认" { return rejection }
-        if dirty { return "修改尚未应用；保存会启用此曲线，关闭会丢弃草稿。" }
+        if dirty { return savedLocally ? "已保存到 Mac；草稿尚未应用到耳机。" : "草稿尚未应用；可保存到 Mac，关闭会丢弃未保存的草稿。" }
         return rejection ?? buds.operations[.equalizer]?.phase.message ?? "拖动推子调节，方向键微调；点击数值归零。"
     }
 
@@ -284,6 +319,8 @@ struct CustomEqualizerView: View {
                         }.disabled(busy)
                     }
                     if baseline != nil || creating {
+                        Button(savedLocally ? "本地已保存" : "保存到 Mac") { saveLocal() }
+                            .disabled(busy || target?.writePayload == nil || savedLocally || localError != nil)
                         Button(creating ? "新增并启用" : dirty ? "保存并启用" : baseline?.isSelected == true ? "已启用" : "启用曲线") {
                             guard let target else { return }
                             send(creating ? .create : .update, target: target)
@@ -300,6 +337,8 @@ struct CustomEqualizerView: View {
     }
 
     private func newCurve() {
+        savedScheme = nil
+        submitted = nil
         baseline = nil
         creating = true
         name = "自定义 \(curves.count + 1)"
@@ -319,6 +358,7 @@ struct CustomEqualizerView: View {
     }
 
     private func load(_ curve: CustomEqualizer?) {
+        savedScheme = nil
         baseline = curve
         draft = curve?.gains ?? []
         name = curve?.name ?? ""
@@ -326,6 +366,36 @@ struct CustomEqualizerView: View {
         confirmDelete = false
         submitted = nil
         rejection = nil
+    }
+
+    private func reloadLocalSchemes() {
+        do {
+            localSchemes = try localStore.load()
+            localError = nil
+        } catch { localError = error.localizedDescription }
+    }
+
+    private func saveLocal() {
+        guard let target else { return }
+        do {
+            savedScheme = try localStore.save(target)
+            reloadLocalSchemes()
+        } catch { localError = error.localizedDescription }
+    }
+
+    private func restoreLocal(_ scheme: LocalEqualizerScheme) {
+        guard !busy, !dirty, !confirmDelete, let curve = scheme.draft else { return }
+        newCurve()
+        name = curve.name
+        draft = curve.gains
+        savedScheme = scheme
+    }
+
+    private func deleteLocal(_ scheme: LocalEqualizerScheme) {
+        do {
+            try localStore.delete(id: scheme.id)
+            reloadLocalSchemes()
+        } catch { localError = error.localizedDescription }
     }
 }
 

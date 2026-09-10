@@ -315,7 +315,7 @@ final class Buds: NSObject {
     }
 
     func panelWillOpen() {
-        let version = "1.3"
+        let version = "1.4"
         guard WhatsNewPresentationPolicy.requestIfNeeded(version: version, settings: settings)
         else { return }
         onWhatsNewRequested?()

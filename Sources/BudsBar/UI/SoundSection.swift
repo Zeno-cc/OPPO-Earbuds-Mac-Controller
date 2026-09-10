@@ -63,7 +63,7 @@ struct SoundSection: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .disabled(!buds.isControlChannelOpen)
+                        .help("编辑耳机曲线或 Mac 本地方案")
                     }
                 }
             }

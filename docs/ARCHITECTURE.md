@@ -22,7 +22,7 @@ BudsProtocol + DeviceProfile（帧编解码、型号差异）
 
 - `BudsCore` 不依赖 AppKit、SwiftUI 或蓝牙硬件，负责帧编解码、设备能力、会话状态和命令顺序。
 - `RFCOMMTransport` 是唯一直接读写 OPO RFCOMM 控制通道的组件。
-- `EarbudsSession` 接收传输事件，将协议报告归并为电量、佩戴状态和降噪状态。发送设置后等待耳机回报，不提前修改真实状态。
+- `EarbudsSession` 接收传输事件，将协议报告归并为电量、盒内/盒外位置状态和降噪状态。发送设置后等待耳机回报，不提前修改真实状态。
 - `Buds` 负责 macOS 蓝牙设备发现、自动连接、用户连接意图、系统电量兜底和界面可观察状态。
 - `PanelView` 根据设备能力显示功能。未适配型号不会显示可写的降噪控制。
 

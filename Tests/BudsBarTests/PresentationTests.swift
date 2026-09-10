@@ -131,14 +131,14 @@ final class PresentationTests: XCTestCase {
         XCTAssertTrue(settings.unexpectedDisconnectHUDEnabled)
         XCTAssertFalse(settings.menuBarBatteryEnabled)
         XCTAssertTrue(settings.dockIconEnabled)
-        XCTAssertFalse(settings.hasSeenWhatsNew(version: "1.3"))
+        XCTAssertFalse(settings.hasSeenWhatsNew(version: "1.4"))
 
         settings.setConnectHUDEnabled(false)
         settings.setReconnectHUDEnabled(false)
         settings.setUnexpectedDisconnectHUDEnabled(false)
         settings.setMenuBarBatteryEnabled(true)
         settings.setDockIconEnabled(false)
-        settings.markWhatsNewSeen(version: "1.3")
+        settings.markWhatsNewSeen(version: "1.4")
 
         let restored = AppSettings(defaults: defaults)
         XCTAssertFalse(restored.connectHUDEnabled)
@@ -146,7 +146,7 @@ final class PresentationTests: XCTestCase {
         XCTAssertFalse(restored.unexpectedDisconnectHUDEnabled)
         XCTAssertTrue(restored.menuBarBatteryEnabled)
         XCTAssertFalse(restored.dockIconEnabled)
-        XCTAssertTrue(restored.hasSeenWhatsNew(version: "1.3"))
+        XCTAssertTrue(restored.hasSeenWhatsNew(version: "1.4"))
     }
 
     func testMenuBarRemainsReachableWhenDockIconIsHidden() {

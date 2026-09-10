@@ -127,12 +127,21 @@ struct PanelView: View {
     }
 
     private var disconnectedNote: some View {
-        Text(disconnectedMessage)
-            .font(.callout)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityLabel(disconnectedMessage)
+        VStack(alignment: .leading, spacing: PanelDesignTokens.spacing12) {
+            Text(disconnectedMessage)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityLabel(disconnectedMessage)
+            Button {
+                buds.onCustomEqualizerRequested?()
+            } label: {
+                Label("Mac 本地 EQ 方案", systemImage: "internaldrive")
+            }
+            .buttonStyle(.borderless)
+            .help("离线编辑和保存方案；连接 Air5 Pro 后再应用")
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var disconnectedMessage: String {
