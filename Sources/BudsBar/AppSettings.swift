@@ -23,6 +23,11 @@ final class AppSettings {
     private(set) var unexpectedDisconnectHUDEnabled: Bool
     private(set) var menuBarBatteryEnabled: Bool
     private(set) var dockIconEnabled: Bool
+    /// Stored rather than computed on purpose. Observation only tracks stored `var`s, and the
+    /// hot-key store is a plain `let` over UserDefaults — a computed property reading it would
+    /// register no dependency, so clearing a shortcut would persist but never redraw the row.
+    private(set) var quickNoiseHotKey: HotKeyDefinition?
+    private let hotKeyStore: HotKeyStore
     var preferredDeviceAddress: String? {
         didSet {
             if let preferredDeviceAddress {
@@ -35,6 +40,9 @@ final class AppSettings {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        let hotKeyStore = HotKeyStore(defaults: defaults)
+        self.hotKeyStore = hotKeyStore
+        self.quickNoiseHotKey = hotKeyStore.definition
         self.launchesAtLogin = SMAppService.mainApp.status == .enabled
         self.lowBatteryNotificationsEnabled = defaults.bool(
             forKey: Key.lowBatteryNotificationsEnabled)
@@ -100,6 +108,11 @@ final class AppSettings {
     func setDockIconEnabled(_ enabled: Bool) {
         dockIconEnabled = enabled
         defaults.set(enabled, forKey: Key.dockIconEnabled)
+    }
+
+    func setQuickNoiseHotKey(_ definition: HotKeyDefinition?) {
+        quickNoiseHotKey = definition
+        hotKeyStore.save(definition)
     }
 
     func hasSeenWhatsNew(version: String) -> Bool {

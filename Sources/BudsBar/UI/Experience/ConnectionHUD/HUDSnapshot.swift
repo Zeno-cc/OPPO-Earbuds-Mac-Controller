@@ -11,6 +11,16 @@ struct HUDSnapshot: Equatable {
         !battery.items.isEmpty || noiseControlText != nil || equalizerText != nil
     }
 
+    /// Explicit form, for callers that already hold the pieces.
+    init(deviceName: String, isConnected: Bool, battery: BatteryPresentation,
+         noiseControlText: String? = nil, equalizerText: String? = nil) {
+        self.deviceName = deviceName
+        self.isConnected = isConnected
+        self.battery = battery
+        self.noiseControlText = noiseControlText
+        self.equalizerText = equalizerText
+    }
+
     init(buds: Buds, event: ConnectionHUDEvent) {
         deviceName = buds.name
         isConnected = buds.isConnected

@@ -19,6 +19,9 @@ struct BatteryPresentation: Equatable {
     }
 
     let items: [Item]
+    /// Minimum of left and right, as a percentage. Superseded for the menu bar by
+    /// `MenuBarBatteryPresentation`, whose L/R/C slots never fall back to a merged reading;
+    /// kept because it still describes the panel/HUD projection these items come from.
     let menuBarPercentage: Int?
 
     init(

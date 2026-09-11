@@ -10,6 +10,22 @@ final class PresentationTests: XCTestCase {
         XCTAssertEqual(RepositoryDestination.footerHeight, 54)
     }
 
+    /// A fixed-height release panel clipped the added v1.5 rows into "…". The panel must be
+    /// sized from its content, so adding a feature can never hide one.
+    func testWhatsNewPanelIsTallEnoughForItsContent() {
+        let hosting = NSHostingController(rootView: WhatsNewView {})
+        hosting.sizingOptions = [.preferredContentSize]
+        let neededHeight = hosting.view.fittingSize.height
+
+        let controller = WhatsNewPanelController()
+        XCTAssertGreaterThan(neededHeight, 0, "the view must report an intrinsic height")
+        XCTAssertGreaterThanOrEqual(
+            controller.contentSize.height, neededHeight - 1,
+            "panel height \(controller.contentSize.height) clips content of \(neededHeight)")
+        XCTAssertGreaterThanOrEqual(
+            controller.contentSize.width, WhatsNewView.contentWidth)
+    }
+
     @MainActor
     func testRepositoryFooterRendersAtPanelWidthInBothAppearances() throws {
         for scheme in [ColorScheme.light, .dark] {
@@ -216,5 +232,112 @@ final class PresentationTests: XCTestCase {
 
         XCTAssertNil(oneSide.menuBarPercentage)
         XCTAssertNil(invalidSide.menuBarPercentage)
+    }
+
+    func testMenuBarBatteryStartsIconOnlyWithoutTrustedSlotObservation() {
+        // The projection only accepts per-slot vendor observations, so an aggregate-only
+        // state has nothing to show and must stay icon-only instead of inventing L/R.
+        XCTAssertNil(MenuBarBatteryPresentation(
+            observations: [:], generation: 1, now: 0).text)
+
+        // Explicit unknown and a stale reading are both "no displayable slot".
+        XCTAssertNil(MenuBarBatteryPresentation(observations: [
+            .left: BatterySlotObservation(reading: nil, generation: 1, observedAt: 0)
+        ], generation: 1, now: 0).text)
+        XCTAssertNil(MenuBarBatteryPresentation(observations: [
+            .left: BatterySlotObservation(
+                reading: BatteryReading(level: 42), generation: 1, observedAt: 0)
+        ], generation: 1, now: 46).text)
+    }
+
+    func testMenuBarBatteryDropsObservationsFromAnEarlierGeneration() {
+        let presentation = MenuBarBatteryPresentation(observations: [
+            .left: BatterySlotObservation(
+                reading: BatteryReading(level: 80), generation: 1, observedAt: 0),
+            .right: BatterySlotObservation(
+                reading: BatteryReading(level: 81), generation: 2, observedAt: 0)
+        ], generation: 2, now: 0)
+        XCTAssertEqual(presentation.text, "L —  R 81%  C —")
+    }
+
+    func testMenuBarBatteryKeepsPartialFreshSlotsAndMarksStaleOrUnknownAsDash() {
+        let presentation = MenuBarBatteryPresentation(observations: [
+            .left: BatterySlotObservation(reading: BatteryReading(level: 0), generation: 1, observedAt: 40),
+            .right: BatterySlotObservation(reading: BatteryReading(level: 72), generation: 1, observedAt: 0),
+            .enclosure: BatterySlotObservation(reading: nil, generation: 1, observedAt: 40)
+        ], generation: 1, now: 46)
+        XCTAssertEqual(presentation.text, "L 0%  R —  C —")
+        XCTAssertTrue(presentation.tooltip?.contains("左耳 0%") == true)
+        XCTAssertTrue(presentation.tooltip?.contains("右耳 未知") == true)
+    }
+
+    func testMenuBarBatteryOnlyShowsLightningForExplicitChargingTrue() {
+        let presentation = MenuBarBatteryPresentation(observations: [
+            .left: BatterySlotObservation(reading: BatteryReading(level: 50, isCharging: false), generation: 1, observedAt: 0),
+            .right: BatterySlotObservation(reading: BatteryReading(level: 51, isCharging: nil), generation: 1, observedAt: 0),
+            .enclosure: BatterySlotObservation(reading: BatteryReading(level: 52, isCharging: true), generation: 1, observedAt: 0)
+        ], generation: 1, now: 0)
+        XCTAssertEqual(presentation.text, "L 50%  R 51%  C 52% ⚡")
+    }
+
+    func testQuickNoiseToggleWaitsOnceForUnknownAndCancelsExpiredIntent() {
+        var state = QuickNoiseState()
+        XCTAssertEqual(QuickNoiseReducer.toggle(&state, generation: 3, now: 10), .waitForMode)
+        XCTAssertEqual(QuickNoiseReducer.toggle(&state, generation: 3, now: 10.5), .waitForMode)
+        XCTAssertEqual(QuickNoiseReducer.modeArrived(&state, mode: .transparency, generation: 3, now: 12.1), .ignored)
+        XCTAssertFalse(state.isWaitingForMode)
+    }
+
+    func testQuickNoiseToggleUsesTransparencyAndANCWithoutOptimism() {
+        var state = QuickNoiseState(confirmedMode: .noiseCancellation)
+        XCTAssertEqual(QuickNoiseReducer.toggle(&state, generation: 1, now: 0), .send(.transparency))
+        state.confirmedMode = .off
+        XCTAssertEqual(QuickNoiseReducer.toggle(&state, generation: 1, now: 0), .send(.noiseCancellation))
+        XCTAssertFalse(state.operationPending)
+    }
+
+    /// The intent must invert the mode the buds actually report, not a target decided while
+    /// that mode was still unknown — otherwise an unknown-mode press whose report says ANC
+    /// would send ANC again and look successful.
+    func testDeferredQuickToggleInvertsTheModeThatActuallyArrives() {
+        for arrived in NoiseMode.allCases {
+            var state = QuickNoiseState()
+            XCTAssertEqual(QuickNoiseReducer.toggle(&state, generation: 7, now: 0), .waitForMode)
+            XCTAssertEqual(
+                QuickNoiseReducer.modeArrived(&state, mode: arrived, generation: 7, now: 1.5),
+                .send(QuickNoiseReducer.target(for: arrived)))
+            XCTAssertFalse(state.isWaitingForMode)
+        }
+    }
+
+    /// After the window closes the entry point must work again, not stay silent forever.
+    func testExpiredIntentIsReArmedByTheNextToggle() {
+        var state = QuickNoiseState()
+        XCTAssertEqual(QuickNoiseReducer.toggle(&state, generation: 5, now: 0), .waitForMode)
+        XCTAssertFalse(QuickNoiseReducer.hasLiveIntent(state, generation: 5, now: 2.5))
+        XCTAssertEqual(QuickNoiseReducer.toggle(&state, generation: 5, now: 3), .waitForMode)
+        XCTAssertTrue(QuickNoiseReducer.hasLiveIntent(state, generation: 5, now: 3.5))
+        // A report for the stale window does not fire; the re-armed one still does.
+        XCTAssertEqual(QuickNoiseReducer.modeArrived(&state, mode: .transparency, generation: 5, now: 3.6),
+                       .send(.noiseCancellation))
+    }
+
+    func testIntentFromAnEarlierGenerationIsNeverResolved() {
+        var state = QuickNoiseState()
+        XCTAssertEqual(QuickNoiseReducer.toggle(&state, generation: 1, now: 0), .waitForMode)
+        XCTAssertEqual(QuickNoiseReducer.modeArrived(&state, mode: .off, generation: 2, now: 1), .ignored)
+        XCTAssertFalse(state.isWaitingForMode)
+    }
+
+    func testHotKeyRequiresPrimaryModifierAndPersistsAsTwoValues() throws {
+        XCTAssertFalse(HotKeyDefinition(keyCode: 12, modifiers: 0).isValid)
+        let suite = "hotkey.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let definition = HotKeyDefinition(keyCode: 12, modifiers: HotKeyDefinition.option)
+        HotKeyStore(defaults: defaults).save(definition)
+        XCTAssertEqual(HotKeyStore(defaults: defaults).definition, definition)
+        HotKeyStore(defaults: defaults).save(nil)
+        XCTAssertNil(HotKeyStore(defaults: defaults).definition)
     }
 }

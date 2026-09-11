@@ -27,6 +27,8 @@ public struct EarbudsPlacementState: Equatable {
 public struct EarbudsState: Equatable {
     public var battery = EarbudsBatteryState()
     public var batteryFeature: FeatureState<BatteryState> = .unknown
+    public var batteryObservations: [BudsProtocol.BatterySlot: BatterySlotObservation] = [:]
+    public var connectionGeneration: UInt64 = 0
     public var deviceInformationFeature: FeatureState<DeviceInformation> = .unknown
     public var equalizerFeature: FeatureState<EQPreset> = .unknown
     public var customEqualizerFeature: FeatureState<[CustomEqualizer]> = .unknown
@@ -86,6 +88,8 @@ public final class EarbudsSession {
         self.state.soundRefresh = [:]
         self.state.placement = EarbudsPlacementState()
         self.state.unknownPlacementValues = [:]
+        self.state.batteryObservations = [:]
+        self.state.connectionGeneration = connectionGeneration
         if !profile.capabilities.contains(.deviceInformation) {
             self.state.deviceInformationFeature = .unsupported
         }
@@ -102,6 +106,8 @@ public final class EarbudsSession {
         self.intent = intent
         guard connectionState == .idle || isFailed else { return }
         connectionGeneration &+= 1
+        state.connectionGeneration = connectionGeneration
+        state.batteryObservations = [:]
         connectionState = .openingControlChannel
         onStateChange?()
         transport.open()
@@ -201,6 +207,7 @@ public final class EarbudsSession {
         connectionState = .disconnecting
         state.placement = EarbudsPlacementState()
         state.unknownPlacementValues = [:]
+        state.batteryObservations = [:]
         onStateChange?()
         initialSyncWorkItem?.cancel()
         initialSyncWorkItem = nil
@@ -443,6 +450,7 @@ public final class EarbudsSession {
             connectionState = .idle
             state.placement = EarbudsPlacementState()
             state.unknownPlacementValues = [:]
+            state.batteryObservations = [:]
             cancelOperations()
             initialSyncWorkItem?.cancel()
             initialSyncWorkItem = nil
@@ -456,6 +464,7 @@ public final class EarbudsSession {
             connectionState = .failed(.transport(error))
             state.placement = EarbudsPlacementState()
             state.unknownPlacementValues = [:]
+            state.batteryObservations = [:]
             cancelOperations()
             initialSyncWorkItem?.cancel()
             initialSyncWorkItem = nil
@@ -490,6 +499,8 @@ public final class EarbudsSession {
                 case .enclosure:
                     state.battery.enclosure = reading
                 }
+                state.batteryObservations[slot] = BatterySlotObservation(
+                    reading: reading, generation: connectionGeneration, observedAt: now())
             case .placement(let slot, let placement):
                 state.unknownPlacementValues.removeValue(forKey: slot)
                 let changed = state.placement[slot] != placement

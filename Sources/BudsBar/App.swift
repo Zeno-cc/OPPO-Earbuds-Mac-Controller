@@ -28,6 +28,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var wakeObserver: NSObjectProtocol?
     private var stabilizingAfterWakeUntil = Date.distantPast
     private var appliedDockIconEnabled: Bool?
+    private lazy var quickControlMenu = QuickControlMenu(buds: buds)
+    private lazy var globalHotKeyController = GlobalHotKeyController()
+    private lazy var quickActionHUD = QuickActionHUDController()
+    private var localMouseMonitor: Any?
     private lazy var whatsNewPanelController = WhatsNewPanelController()
     private lazy var customEqualizerPanelController = CustomEqualizerPanelController(buds: buds)
     private lazy var hudCoordinator = ConnectionHUDCoordinator(
@@ -40,7 +44,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             case .reconnected: return buds.reconnectHUDEnabled
             case .unexpectedDisconnected: return buds.unexpectedDisconnectHUDEnabled
             }
-        })
+        },
+        // Both HUDs anchor to the same corner, so the connection card queues instead of
+        // drawing over a quick action that is already on screen.
+        isSlotBusy: { [weak self] in self?.quickHUDSlotBusy ?? false })
+    /// Mirrors `QuickActionHUDController.onVisibilityChange` for `isSlotBusy`.
+    private var quickHUDSlotBusy = false
 
     /// How long unavailability must persist before the item is removed. The link genuinely
     /// bounces during a quick off→on — the old session's teardown notifications land after
@@ -58,6 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
         }
         buds.shutdown()
+        if let localMouseMonitor { NSEvent.removeMonitor(localMouseMonitor) }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -78,6 +88,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.target = self
         statusItem.button?.action = #selector(togglePanel)
+        globalHotKeyController.onPress = { [weak self] in self?.buds.quickToggle() }
+        buds.onQuickHotKeyChange = { [weak self] definition in
+            self?.globalHotKeyController.replace(with: definition) ?? false
+        }
+        if let definition = buds.quickNoiseHotKey {
+            _ = globalHotKeyController.replace(with: definition)
+        }
+        buds.onQuickActionFeedback = { [weak self] feedback in
+            self?.quickActionHUD.show(feedback)
+        }
+        // The quick HUD and the connection HUD share one screen slot. A user-triggered
+        // action wins it; a connection event that arrives meanwhile is queued, not lost.
+        quickActionHUD.onVisibilityChange = { [weak self] visible in
+            guard let self else { return }
+            self.quickHUDSlotBusy = visible
+            if visible {
+                self.hudCoordinator.yieldSlot()
+            } else {
+                self.hudCoordinator.retryDeferredPresentation()
+            }
+        }
+        localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.rightMouseDown]) { [weak self] event in
+            guard let self, let button = self.statusItem?.button,
+                  event.window === button.window,
+                  button.convert(event.locationInWindow, from: nil).x >= 0,
+                  button.convert(event.locationInWindow, from: nil).x <= button.bounds.width
+            else { return event }
+            self.showQuickMenu()
+            return nil
+        }
 
         hudCoordinator.observe(connectionObservation)
         buds.onStateChange = { [weak self] in
@@ -105,6 +145,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         ) { [weak self] _ in
             guard let self else { return }
             self.stabilizingAfterWakeUntil = Date().addingTimeInterval(1)
+            // `systemUptime` stops while the Mac sleeps, so a press from before the sleep
+            // would otherwise still look fresh. Nothing armed before a wake should fire.
+            self.buds.cancelQuickIntent()
             self.hudCoordinator.stabilize(with: self.connectionObservation)
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
                 guard let self else { return }
@@ -168,18 +211,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             statusItem.button?.image = menuBarIcon
         }
         guard statusItem.isVisible, let button = statusItem.button else { return }
-        let percentage = buds.menuBarBatteryEnabled
-            ? buds.batteryPresentation.menuBarPercentage : nil
-        statusItem.length = percentage == nil
+        let battery = buds.menuBarBatteryEnabled ? buds.menuBarBatteryPresentation : nil
+        statusItem.length = battery?.text == nil
             ? NSStatusItem.squareLength : NSStatusItem.variableLength
-        button.title = percentage.map { " \($0)%" } ?? ""
-        button.imagePosition = percentage == nil ? .imageOnly : .imageLeading
+        button.title = battery?.text.map { " \($0)" } ?? ""
+        button.imagePosition = battery?.text == nil ? .imageOnly : .imageLeading
         button.alphaValue = statusItemOpacity
         button.toolTip = statusItemTooltip
     }
 
     @objc private func togglePanel() {
         guard let button = statusItem.button else { return }
+        if NSApp.currentEvent?.modifierFlags.contains(.option) == true {
+            buds.quickToggle()
+            return
+        }
+        // macOS treats Control-click as a secondary click; so does the rest of the app.
+        if NSApp.currentEvent?.modifierFlags.contains(.control) == true {
+            showQuickMenu()
+            return
+        }
         if popover.isShown {
             popover.performClose(nil)
             return
@@ -199,6 +250,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         ) { [weak self] _ in
             self?.popover.performClose(nil)
         }
+    }
+
+    private func showQuickMenu() {
+        guard let button = statusItem?.button else { return }
+        popover.performClose(nil)
+        quickControlMenu.makeMenu().popUp(
+            positioning: nil,
+            at: NSPoint(x: 0, y: button.bounds.height),
+            in: button)
     }
 
     func popoverDidClose(_ notification: Notification) {
@@ -249,13 +309,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             state = buds.isConnected ? "已连接" : "未连接"
         }
         var parts = [buds.name, state]
-        let slots = buds.batteryPresentation.items.filter {
-            $0.kind == .left || $0.kind == .right
-        }
-        if !slots.isEmpty {
-            parts.append(slots.compactMap { item in
-                item.reading.level.map { "\(item.label) \($0)%" }
-            }.joined(separator: " · "))
+        if let battery = buds.menuBarBatteryPresentation.tooltip {
+            // The same projection that draws the title, so the two can never disagree. The
+            // panel's vendor-then-system fallback is deliberately not used here: naming a bud
+            // from a merged system reading is exactly what the menu bar must not do.
+            parts.append(battery)
         }
         return parts.joined(separator: " · ")
     }

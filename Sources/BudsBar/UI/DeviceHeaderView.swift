@@ -249,14 +249,22 @@ private struct MoreOptionsView: View {
                 }
 
                 inspectorGroup("菜单栏") {
-                    settingRow("显示左右耳最低电量", isOn: Binding(
+                    settingRow("显示 L / R / C 电量", isOn: Binding(
                         get: { buds.menuBarBatteryEnabled },
                         set: { buds.setMenuBarBatteryEnabled($0) }))
+                        .help("耳机电量固定显示左右耳与充电盒；未读到的槽位显示 “—”，不会用合并电量推断。")
+                }
+
+                inspectorGroup("快速控制") {
+                    HotKeyRecorderRow(buds: buds)
+                    Text("Option + 点击菜单栏图标始终可用；右键可打开完整菜单。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
                 inspectorGroup("关于") {
                     HStack {
-                        Button("v1.4 新功能") { buds.showWhatsNew() }
+                        Button("v1.5 新功能") { buds.showWhatsNew() }
                             .buttonStyle(.borderless)
                         Spacer()
                         Button("退出") { NSApplication.shared.terminate(nil) }

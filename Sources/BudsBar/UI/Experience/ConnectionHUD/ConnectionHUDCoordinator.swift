@@ -5,6 +5,8 @@ final class ConnectionHUDCoordinator {
     private let panelController: ConnectionHUDPanelController
     private let snapshot: (ConnectionHUDEvent) -> HUDSnapshot
     private let isEnabled: (ConnectionHUDEvent) -> Bool
+    /// True while another, user-triggered HUD owns the shared screen slot.
+    private let isSlotBusy: () -> Bool
     private var disconnectWorkItem: DispatchWorkItem?
     private var readinessWorkItem: DispatchWorkItem?
     private var waitingEvent: ConnectionHUDEvent?
@@ -12,15 +14,17 @@ final class ConnectionHUDCoordinator {
     init(
         panelController: ConnectionHUDPanelController = ConnectionHUDPanelController(),
         snapshot: @escaping (ConnectionHUDEvent) -> HUDSnapshot,
-        isEnabled: @escaping (ConnectionHUDEvent) -> Bool
+        isEnabled: @escaping (ConnectionHUDEvent) -> Bool,
+        isSlotBusy: @escaping () -> Bool
     ) {
         self.panelController = panelController
         self.snapshot = snapshot
         self.isEnabled = isEnabled
+        self.isSlotBusy = isSlotBusy
     }
 
     func observe(_ observation: ConnectionExperienceObservation, at date: Date = Date()) {
-        if let waitingEvent {
+        if let waitingEvent, !isSlotBusy() {
             let current = snapshot(waitingEvent)
             if current.hasPresentationDetails {
                 show(waitingEvent, snapshot: current)
@@ -43,6 +47,19 @@ final class ConnectionHUDCoordinator {
         readinessWorkItem = nil
         waitingEvent = nil
         panelController.dismiss()
+    }
+
+    /// Called when another HUD takes the shared slot.
+    func yieldSlot() {
+        readinessWorkItem?.cancel()
+        readinessWorkItem = nil
+        panelController.dismissImmediately()
+    }
+
+    /// Called when the shared slot is free again, so a deferred event can land.
+    func retryDeferredPresentation() {
+        guard let waitingEvent, !isSlotBusy() else { return }
+        beginPresentation(waitingEvent)
     }
 
     private func handle(_ effect: ConnectionExperienceEffect) {
@@ -73,6 +90,11 @@ final class ConnectionHUDCoordinator {
         readinessWorkItem = nil
         waitingEvent = nil
         guard isEnabled(event) else { return }
+        // The quick-action HUD wins the slot; keep the event queued instead of dropping it.
+        guard !isSlotBusy() else {
+            waitingEvent = event
+            return
+        }
 
         let current = snapshot(event)
         guard event != .unexpectedDisconnected, !current.hasPresentationDetails else {

@@ -75,6 +75,13 @@ final class ConnectionHUDPanelController {
         beginDismissal(duration: HUDMotionTokens.dismiss)
     }
 
+    /// Hands the shared slot over without a fade. Used when a user-triggered HUD needs the
+    /// slot now: an animating card would still overlap it for the length of the dismissal.
+    func dismissImmediately() {
+        presentationGeneration += 1
+        finishPresentation()
+    }
+
     private func beginPresentation() {
         lifecycle = HUDPresentationLifecycle()
         model.presentationState = lifecycle.start()

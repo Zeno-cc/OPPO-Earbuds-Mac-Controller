@@ -20,15 +20,18 @@ enum WhatsNewPanelPositioning {
 final class WhatsNewPanelController {
     private let panel: NSPanel
 
+    /// Exposed for tests: the panel must never be shorter than the copy it holds.
+    var contentSize: NSSize { panel.contentView?.frame.size ?? panel.frame.size }
+
     init() {
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 400, height: 340),
+            contentRect: NSRect(x: 0, y: 0, width: WhatsNewView.contentWidth + 40, height: 480),
             styleMask: [.titled, .closable, .utilityWindow],
             backing: .buffered,
             defer: true)
         self.panel = panel
 
-        panel.title = "v1.4 新功能"
+        panel.title = "v1.5 新功能"
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
         panel.isReleasedWhenClosed = false
@@ -36,9 +39,14 @@ final class WhatsNewPanelController {
         panel.level = .floating
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.contentViewController = NSHostingController(rootView: WhatsNewView {
+        let hosting = NSHostingController(rootView: WhatsNewView {
             panel.close()
         })
+        hosting.sizingOptions = [.preferredContentSize]
+        panel.contentViewController = hosting
+        // The height follows the copy, so a future release that adds a feature grows the
+        // panel instead of clipping the last row.
+        panel.setContentSize(hosting.view.fittingSize)
     }
 
     func show() {

@@ -6,18 +6,22 @@ struct SoundSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: PanelDesignTokens.spacing16) {
-            SectionHeader("音效")
+            // The equalizer annotation rides on the section title's baseline instead of
+            // holding a row of its own, which is one whole row of height the panel gets back.
+            HStack(alignment: .firstTextBaseline, spacing: PanelDesignTokens.spacing8) {
+                SectionHeader("音效")
+                Spacer(minLength: PanelDesignTokens.spacing8)
+                if buds.supportsEqualizer {
+                    Label("大师调音", systemImage: "slider.horizontal.3")
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .labelStyle(.titleAndIcon)
+                        .accessibilityLabel("大师调音")
+                }
+            }
 
             if buds.supportsEqualizer {
                 VStack(alignment: .leading, spacing: PanelDesignTokens.spacing12) {
-                    HStack(spacing: PanelDesignTokens.spacing8) {
-                        Image(systemName: "slider.horizontal.3")
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundStyle(.secondary)
-                        Text("大师调音")
-                            .font(.subheadline.weight(.medium))
-                    }
-
                     CompactSegmentedControl(
                         values: EQPreset.allCases,
                         selection: currentEqualizer,

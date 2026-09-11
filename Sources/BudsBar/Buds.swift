@@ -1,4 +1,5 @@
 import BudsCore
+import AppKit
 import Foundation
 import IOBluetooth
 import Observation
@@ -30,6 +31,8 @@ final class Buds: NSObject {
     var isControlChannelOpen = false
     var battery = Battery()
     var batteryFeature: FeatureState<BatteryState> = .unknown
+    var batteryObservations: [BudsProtocol.BatterySlot: BatterySlotObservation] = [:]
+    var connectionGeneration: UInt64 = 0
     var deviceInformationFeature: FeatureState<DeviceInformation> = .unknown
     var equalizerFeature: FeatureState<EQPreset> = .unknown
     var customEqualizerFeature: FeatureState<[CustomEqualizer]> = .unknown
@@ -64,11 +67,26 @@ final class Buds: NSObject {
     var unexpectedDisconnectHUDEnabled: Bool { settings.unexpectedDisconnectHUDEnabled }
     var menuBarBatteryEnabled: Bool { settings.menuBarBatteryEnabled }
     var dockIconEnabled: Bool { settings.dockIconEnabled }
+    var quickNoiseHotKey: HotKeyDefinition? { settings.quickNoiseHotKey }
+    /// Populated when the last shortcut change was refused, for the settings row to show.
+    private(set) var quickHotKeyRejection: String?
+    /// Registration lives in the AppKit layer, persistence stays here. A definition is only
+    /// written after the system accepted the combination, so a refused key leaves the
+    /// previous shortcut both registered and persisted.
+    var onQuickHotKeyChange: ((HotKeyDefinition?) -> Bool)?
+    /// Narration for controls triggered without opening the panel.
+    var onQuickActionFeedback: ((QuickActionFeedback) -> Void)?
     var suppressesUnexpectedDisconnectPresentation: Bool {
         isSwitchedOff || isSwitchingDevice
     }
     var batteryPresentation: BatteryPresentation {
         BatteryPresentation(vendor: battery, system: systemBattery, placement: placement)
+    }
+    var menuBarBatteryPresentation: MenuBarBatteryPresentation {
+        MenuBarBatteryPresentation(
+            observations: batteryObservations,
+            generation: connectionGeneration,
+            now: ProcessInfo.processInfo.systemUptime)
     }
 
     struct DeviceOption: Identifiable, Equatable {
@@ -122,6 +140,12 @@ final class Buds: NSObject {
     /// True while the in-flight connect attempt came from the poll rather than the user.
     private var isAutoConnecting = false
     private var isSwitchingDevice = false
+    private var quickNoiseState = QuickNoiseState()
+    /// Set while a quick control is in flight, so the HUD only narrates the entry points
+    /// that promised an outcome and only until that command resolves.
+    private var pendingQuickFeedback: QuickActionFeedbackStyle?
+    /// Fires when an armed intent outlives its window without a mode report.
+    private var quickIntentTimeoutWorkItem: DispatchWorkItem?
 
     /// False when no paired device speaks the control protocol — nothing to drive.
     var isPaired: Bool { device != nil }
@@ -314,8 +338,37 @@ final class Buds: NSObject {
         onStateChange?()
     }
 
+    @discardableResult
+    func setQuickNoiseHotKey(_ definition: HotKeyDefinition?) -> Bool {
+        if let definition, !definition.isValid {
+            quickHotKeyRejection = "至少需要一个 Command、Option 或 Control 修饰键"
+            return false
+        }
+        guard onQuickHotKeyChange?(definition) ?? true else {
+            quickHotKeyRejection = "该组合已被系统或其他应用占用，请换一个"
+            return false
+        }
+        quickHotKeyRejection = nil
+        settings.setQuickNoiseHotKey(definition)
+        onStateChange?()
+        return true
+    }
+
+    /// The recorder must not fight the shortcut it is replacing.
+    func suspendQuickNoiseHotKey() {
+        _ = onQuickHotKeyChange?(nil)
+    }
+
+    func resumeQuickNoiseHotKey() {
+        guard let definition = settings.quickNoiseHotKey else { return }
+        _ = onQuickHotKeyChange?(definition)
+    }
+
     func panelWillOpen() {
-        let version = "1.4"
+        // Opening the panel is an explicit, in-app action: drop the one-shot intent and any
+        // pending narration so the popover and a stale quick action cannot both act.
+        cancelQuickIntent()
+        let version = "1.5"
         guard WhatsNewPresentationPolicy.requestIfNeeded(version: version, settings: settings)
         else { return }
         onWhatsNewRequested?()
@@ -383,6 +436,7 @@ final class Buds: NSObject {
         lastFrameAt = .distantPast
         battery = Battery()
         batteryFeature = .unknown
+        batteryObservations = [:]
         deviceInformationFeature = .unknown
         equalizerFeature = .unknown
         customEqualizerFeature = .unknown
@@ -403,6 +457,9 @@ final class Buds: NSObject {
         placement = Placement()
         mode = nil
         ancLevel = nil
+        quickNoiseState = QuickNoiseState()
+        cancelQuickIntent()
+        connectionGeneration &+= 1
         refreshConnectionState()
         isSwitchingDevice = false
     }
@@ -795,6 +852,8 @@ final class Buds: NSObject {
         earbudsSession = nil
         controlTransport = nil
         isControlChannelOpen = false
+        // A one-shot intent belongs to the link it was armed on; nothing may carry it over.
+        cancelQuickIntent()
     }
 
     private func controlChannelBecameActive() {
@@ -812,6 +871,8 @@ final class Buds: NSObject {
 
         let next = earbudsSession.state
         battery = next.battery
+        batteryObservations = next.batteryObservations
+        connectionGeneration = next.connectionGeneration
         batteryFeature = next.batteryFeature
         deviceInformationFeature = next.deviceInformationFeature
         equalizerFeature = next.equalizerFeature
@@ -836,6 +897,19 @@ final class Buds: NSObject {
         placement = next.placement
         mode = next.mode
         ancLevel = next.ancLevel
+        quickNoiseState.confirmedMode = next.mode
+        quickNoiseState.operationPending = next.operations[.noise]?.phase.isPending == true
+        if let mode = next.mode {
+            let decision = QuickNoiseReducer.modeArrived(
+                &quickNoiseState, mode: mode, generation: next.connectionGeneration,
+                now: ProcessInfo.processInfo.systemUptime)
+            quickIntentTimeoutWorkItem?.cancel()
+            quickIntentTimeoutWorkItem = nil
+            if case .send(let target) = decision, !set(mode: target) {
+                _ = reportQuickFailure(lastError ?? "降噪切换未能发送")
+            }
+        }
+        resolveQuickFeedback()
         updateBatteryNotifications()
 
         if case .failed(let error) = earbudsSession.connectionState {
@@ -874,29 +948,161 @@ final class Buds: NSObject {
 
     // MARK: - Noise control
 
-    func set(mode requested: NoiseMode) {
+    @discardableResult
+    func set(mode requested: NoiseMode) -> Bool {
         // Deliberately not updating `mode` here. The buds echo a state notification
         // once they have actually switched, and that echo is what the UI renders —
-        // it is also what keeps this panel and realme Link on the phone in agreement.
+        // it is also what keeps this panel and the phone app in agreement.
         guard supportsNoiseControl else {
             lastError = "此耳机型号尚未适配降噪控制"
-            return
+            return false
         }
-        if earbudsSession?.set(mode: requested, rememberedLevel: ancLevel) != true {
+        guard earbudsSession?.set(mode: requested, rememberedLevel: ancLevel) == true else {
             lastError = "控制通道尚未就绪"
+            return false
+        }
+        return true
+    }
+
+    var canQuickNoiseControl: Bool {
+        isControlChannelOpen && supportsNoiseControl
+            && operations[.noise]?.phase.isPending != true
+    }
+
+    /// Option-click and the global hotkey: ANC → Transparency, Transparency or Off → ANC.
+    @discardableResult
+    @objc func quickToggle() -> Bool { quickToggle(style: .full) }
+
+    /// The quick menu's own toggle row. The menu is its own acknowledgement, so it stays
+    /// quiet unless something failed.
+    @discardableResult
+    @objc func quickToggleFromMenu() -> Bool { quickToggle(style: .failuresOnly) }
+
+    @discardableResult
+    private func quickToggle(style: QuickActionFeedbackStyle) -> Bool {
+        guard canQuickNoiseControl else {
+            return reportQuickFailure("控制通道尚未就绪，请先连接耳机")
+        }
+        quickNoiseState.confirmedMode = mode
+        pendingQuickFeedback = style
+        switch QuickNoiseReducer.toggle(
+            &quickNoiseState, generation: connectionGeneration,
+            now: ProcessInfo.processInfo.systemUptime) {
+        case .send(let target):
+            if style == .full { onQuickActionFeedback?(.submitted) }
+            guard set(mode: target) else {
+                return reportQuickFailure(lastError ?? "降噪切换未能发送")
+            }
+            return true
+        case .waitForMode:
+            // The buds have not reported the current mode yet. The reducer holds the intent
+            // for two seconds and sends at most one command once the real mode arrives; the
+            // timer below is what makes "two seconds" true when that report never comes.
+            if style == .full { onQuickActionFeedback?(.submitted) }
+            scheduleQuickIntentTimeout()
+            return true
+        case .ignored:
+            return reportQuickFailure("上一项降噪操作尚未结束，请稍候")
+        }
+    }
+
+    /// The intent is one-shot. Without this the state would stay "waiting" forever after a
+    /// silent mode report, and every later press would be a no-op that still appeared to act.
+    private func scheduleQuickIntentTimeout() {
+        quickIntentTimeoutWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.quickIntentTimeoutWorkItem = nil
+            guard self.quickNoiseState.isWaitingForMode else { return }
+            self.cancelQuickIntent()
+        }
+        quickIntentTimeoutWorkItem = work
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + QuickNoiseReducer.intentTimeout, execute: work)
+    }
+
+    /// Drops an armed intent together with the narration it owned.
+    func cancelQuickIntent() {
+        quickIntentTimeoutWorkItem?.cancel()
+        quickIntentTimeoutWorkItem = nil
+        QuickNoiseReducer.cancel(&quickNoiseState)
+        pendingQuickFeedback = nil
+    }
+
+    /// Explicit menu choices: the menu is its own acknowledgement, so only failures surface.
+    @discardableResult
+    func selectNoiseMode(_ requested: NoiseMode) -> Bool {
+        guard canQuickNoiseControl else {
+            return reportQuickFailure("控制通道尚未就绪，请先连接耳机")
+        }
+        pendingQuickFeedback = .failuresOnly
+        guard set(mode: requested) else {
+            return reportQuickFailure(lastError ?? "降噪切换未能发送")
+        }
+        return true
+    }
+
+    @discardableResult
+    func selectANCLevel(_ requested: ANCLevel) -> Bool {
+        guard canQuickNoiseControl else {
+            return reportQuickFailure("控制通道尚未就绪，请先连接耳机")
+        }
+        pendingQuickFeedback = .failuresOnly
+        guard set(ancLevel: requested) else {
+            return reportQuickFailure(lastError ?? "降噪切换未能发送")
+        }
+        return true
+    }
+
+    @objc func chooseNoiseMode(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let requested = NoiseMode(rawValue: raw) else { return }
+        _ = selectNoiseMode(requested)
+    }
+
+    @objc func chooseANCLevel(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let requested = ANCLevel(rawValue: raw) else { return }
+        _ = selectANCLevel(requested)
+    }
+
+    @discardableResult
+    private func reportQuickFailure(_ message: String) -> Bool {
+        pendingQuickFeedback = nil
+        onQuickActionFeedback?(.failed(message))
+        return false
+    }
+
+    /// Turns a finished noise operation into the message the entry point promised to show.
+    private func resolveQuickFeedback() {
+        guard let style = pendingQuickFeedback, let operation = operations[.noise] else { return }
+        switch operation.phase {
+        case .confirmed:
+            pendingQuickFeedback = nil
+            guard style == .full, let mode else { return }
+            onQuickActionFeedback?(.confirmed(
+                mode, mode == .noiseCancellation ? ancLevel : nil))
+        case .differentState, .timedOut, .sendFailed, .cancelled:
+            pendingQuickFeedback = nil
+            onQuickActionFeedback?(.failed(operation.phase.message ?? "降噪切换未确认"))
+        case .queued, .sent:
+            break
         }
     }
 
     /// Same contract as `set(mode:)` — the level shown is the level the buds reported, not
-    /// the one that was asked for, so the panel and realme Link cannot drift apart.
-    func set(ancLevel requested: ANCLevel) {
+    /// the one that was asked for, so the panel and the phone app cannot drift apart.
+    @discardableResult
+    func set(ancLevel requested: ANCLevel) -> Bool {
         guard supportsNoiseControl else {
             lastError = "此耳机型号尚未适配降噪控制"
-            return
+            return false
         }
-        if earbudsSession?.set(ancLevel: requested) != true {
+        guard earbudsSession?.set(ancLevel: requested) == true else {
             lastError = "控制通道尚未就绪"
+            return false
         }
+        return true
     }
 
     func set(equalizer preset: EQPreset) {
