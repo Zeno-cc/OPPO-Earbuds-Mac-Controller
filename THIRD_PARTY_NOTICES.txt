@@ -1,0 +1,7 @@
+Sparkle 2.9.6
+https://github.com/sparkle-project/Sparkle
+
+This application includes the Sparkle update framework. The complete, unmodified
+license from the exact resolved dependency, including its external license notices,
+is copied by build.sh to Contents/Resources/Sparkle-LICENSE.txt in every App bundle.
+The build fails if that license is unavailable. No original project license is removed.

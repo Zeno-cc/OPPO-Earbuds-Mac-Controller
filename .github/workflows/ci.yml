@@ -1,19 +1,44 @@
 name: CI
-
 on:
   push:
   pull_request:
-
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   build-and-test:
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Build
         run: swift build
-      - name: Test
-        run: swift test
-      - name: Package app (debug)
-        run: bash build.sh debug
-      - name: Verify app bundle
-        run: bash scripts/verify-app-bundle.sh
+      - name: Test debug and release
+        run: |
+          swift test
+          swift test -c release
+      - name: Package development app without production credentials
+        run: |
+          bash -x build.sh debug
+          bash scripts/verify-app-bundle.sh
+      - name: Test real signed feed and ZIP with a disposable key
+        run: bash scripts/test-update-signatures.sh
+      - name: Test real Sparkle installer on an isolated App
+        timeout-minutes: 10
+        run: bash scripts/test-update-install.sh
+      - name: Check whitespace and shell syntax
+        run: |
+          git diff --check
+          bash -n build.sh
+          for script in scripts/*.sh; do bash -n "$script"; done
+  release-tooling:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Negative release and configuration tests
+        run: python3 -m unittest discover -s Tests/ReleaseTests -v

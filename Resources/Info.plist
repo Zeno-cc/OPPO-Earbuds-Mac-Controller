@@ -17,14 +17,36 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.4.0</string>
+	<string>1.5.1</string>
 	<key>CFBundleVersion</key>
-	<string>1.4.0</string>
+	<string>1.5.1</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>26.0</string>
 	<!-- Without this string the Bluetooth TCC prompt never appears and RFCOMM
 	     silently fails. -->
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>OPPO 耳机控制需要通过蓝牙读取耳机电量并切换降噪模式。</string>
+	<key>SUFeedURL</key>
+	<string>https://github.com/Zeno-cc/OPPO-Earbuds-Mac-Controller/releases/latest/download/appcast.xml</string>
+	<!-- SUPublicEDKey is injected into the assembled bundle by configure-updater.py.
+	     Release packaging fails closed until the owner supplies a real public key. -->
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUScheduledCheckInterval</key>
+	<integer>43200</integer>
+	<key>SUAutomaticallyUpdate</key>
+	<false/>
+	<key>SUAllowsAutomaticUpdates</key>
+	<false/>
+	<key>SUVerifyUpdateBeforeExtraction</key>
+	<true/>
+	<key>SURequireSignedFeed</key>
+	<true/>
+	<key>SUSignedFeedFailureExpirationInterval</key>
+	<integer>0</integer>
+	<key>SUEnableSystemProfiling</key>
+	<false/>
+	<key>SUEnableJavaScript</key>
+	<false/>
 </dict>
 </plist>

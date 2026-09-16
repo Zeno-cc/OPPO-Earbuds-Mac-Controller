@@ -255,6 +255,7 @@ private struct MoreOptionsView: View {
                 }
 
                 inspectorGroup("关于") {
+                    SoftwareUpdateSection()
                     HStack {
                         Button("v1.4 新功能") { buds.showWhatsNew() }
                             .buttonStyle(.borderless)
