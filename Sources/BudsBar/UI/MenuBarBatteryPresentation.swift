@@ -9,6 +9,9 @@ struct MenuBarBatteryPresentation: Equatable {
     }
 
     let slots: [Slot]
+    /// Two lines: the buds stack vertically so the item stays narrow. The case rides along
+    /// the second line and only appears once it has a level of its own, because a third line
+    /// would not fit the menu bar.
     let text: String?
     let tooltip: String?
 
@@ -33,15 +36,23 @@ struct MenuBarBatteryPresentation: Equatable {
             tooltip = nil
             return
         }
-        text = slots.map { slot in
+        func line(_ slot: Slot) -> String {
             let label = slot.slot == .left ? "L" : slot.slot == .right ? "R" : "C"
             guard let level = slot.level else { return "\(label) —" }
             return "\(label) \(level)%\(slot.isCharging == true ? " ⚡" : "")"
-        }.joined(separator: "  ")
-        tooltip = slots.map { slot in
+        }
+        let left = slots[0], right = slots[1], box = slots[2]
+        var secondLine = line(right)
+        if box.level != nil { secondLine += "  " + line(box) }
+        text = line(left) + "\n" + secondLine
+
+        func describe(_ slot: Slot) -> String {
             let label = slot.slot == .left ? "左耳" : slot.slot == .right ? "右耳" : "充电盒"
             guard let level = slot.level else { return "\(label) 未知" }
             return "\(label) \(level)%\(slot.isCharging == true ? "（充电中）" : "")"
-        }.joined(separator: " · ")
+        }
+        var described = [describe(left), describe(right)]
+        if box.level != nil { described.append(describe(box)) }
+        tooltip = described.joined(separator: " · ")
     }
 }

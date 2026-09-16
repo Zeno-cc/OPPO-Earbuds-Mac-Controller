@@ -257,7 +257,10 @@ final class PresentationTests: XCTestCase {
             .right: BatterySlotObservation(
                 reading: BatteryReading(level: 81), generation: 2, observedAt: 0)
         ], generation: 2, now: 0)
-        XCTAssertEqual(presentation.text, "L —  R 81%  C —")
+        // The case has no reading of its own, so it is absent from both lines and tooltip.
+        XCTAssertEqual(presentation.text, "L —\nR 81%")
+        XCTAssertFalse(presentation.text?.contains("C ") == true)
+        XCTAssertFalse(presentation.tooltip?.contains("充电盒") == true)
     }
 
     func testMenuBarBatteryKeepsPartialFreshSlotsAndMarksStaleOrUnknownAsDash() {
@@ -266,7 +269,7 @@ final class PresentationTests: XCTestCase {
             .right: BatterySlotObservation(reading: BatteryReading(level: 72), generation: 1, observedAt: 0),
             .enclosure: BatterySlotObservation(reading: nil, generation: 1, observedAt: 40)
         ], generation: 1, now: 46)
-        XCTAssertEqual(presentation.text, "L 0%  R —  C —")
+        XCTAssertEqual(presentation.text, "L 0%\nR —")
         XCTAssertTrue(presentation.tooltip?.contains("左耳 0%") == true)
         XCTAssertTrue(presentation.tooltip?.contains("右耳 未知") == true)
     }
@@ -277,7 +280,57 @@ final class PresentationTests: XCTestCase {
             .right: BatterySlotObservation(reading: BatteryReading(level: 51, isCharging: nil), generation: 1, observedAt: 0),
             .enclosure: BatterySlotObservation(reading: BatteryReading(level: 52, isCharging: true), generation: 1, observedAt: 0)
         ], generation: 1, now: 0)
-        XCTAssertEqual(presentation.text, "L 50%  R 51%  C 52% ⚡")
+        XCTAssertEqual(presentation.text, "L 50%\nR 51%  C 52% ⚡")
+    }
+
+    /// Left and right stack; a missing case collapses the line instead of leaving a gap.
+    func testBudsStackVerticallyAndCaseOnlyJoinsOnceItHasAReading() {
+        let budsOnly = MenuBarBatteryPresentation(observations: [
+            .left: BatterySlotObservation(reading: BatteryReading(level: 100), generation: 1, observedAt: 0),
+            .right: BatterySlotObservation(reading: BatteryReading(level: 96), generation: 1, observedAt: 0)
+        ], generation: 1, now: 0)
+        XCTAssertEqual(budsOnly.text, "L 100%\nR 96%")
+
+        let withCase = MenuBarBatteryPresentation(observations: [
+            .left: BatterySlotObservation(reading: BatteryReading(level: 100), generation: 1, observedAt: 0),
+            .right: BatterySlotObservation(reading: BatteryReading(level: 96), generation: 1, observedAt: 0),
+            .enclosure: BatterySlotObservation(reading: BatteryReading(level: 42), generation: 1, observedAt: 0)
+        ], generation: 1, now: 0)
+        XCTAssertEqual(withCase.text, "L 100%\nR 96%  C 42%")
+        XCTAssertTrue(withCase.tooltip?.contains("充电盒 42%") == true)
+    }
+
+    /// Regression guard: the readout owns the real status-button height, and the ink itself
+    /// must remain centred. This deliberately renders `MenuBarBatteryLabel`, not an ordinary
+    /// `NSButton`; the latter was the false oracle that allowed the clipped layout to recur.
+    func testStackedMenuBarLabelCentresInkInsideStatusButtonHeight() throws {
+        let height: CGFloat = 26
+        let label = MenuBarBatteryLabel(frame: NSRect(x: 0, y: 0, width: 120, height: height))
+        label.appearance = NSAppearance(named: .aqua)
+        label.text = "L 100%\nR 100%  C 100% ⚡"
+
+        let rep = try XCTUnwrap(label.bitmapImageRepForCachingDisplay(in: label.bounds))
+        label.cacheDisplay(in: label.bounds, to: rep)
+        let scale = CGFloat(rep.pixelsHigh) / height
+        var first = -1, last = -1
+        for y in 0..<rep.pixelsHigh {
+            var ink = 0
+            for x in 0..<rep.pixelsWide {
+                guard let colour = rep.colorAt(x: x, y: y) else { continue }
+                let luminance = (colour.redComponent + colour.greenComponent + colour.blueComponent) / 3
+                if colour.alphaComponent > 0.35, luminance < 0.65 { ink += 1 }
+            }
+            if ink > 0 {
+                if first < 0 { first = y }
+                last = y
+            }
+        }
+        XCTAssertGreaterThanOrEqual(first, 0, "the title produced no visible ink")
+        XCTAssertGreaterThanOrEqual(CGFloat(first) / scale, 1, "ink touches the top edge")
+        XCTAssertLessThanOrEqual(
+            CGFloat(last + 1) / scale, height - 1, "ink touches the bottom edge")
+        let inkCentre = (CGFloat(first) + CGFloat(last + 1)) / (2 * scale)
+        XCTAssertEqual(inkCentre, height / 2, accuracy: 1)
     }
 
     func testQuickNoiseToggleWaitsOnceForUnknownAndCancelsExpiredIntent() {

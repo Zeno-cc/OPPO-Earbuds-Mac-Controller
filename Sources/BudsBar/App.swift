@@ -2,6 +2,72 @@ import AppKit
 import BudsCore
 import SwiftUI
 
+/// Draws the compact two-line battery text independently of `NSStatusBarButtonCell`.
+///
+/// A status button's cell is designed for one-line menu bar titles. Giving that cell a
+/// newline makes its offscreen and real-menu-bar layouts disagree, which can push the
+/// second line outside the button. This view owns the full button height and centres two
+/// explicit line boxes, so AppKit has no multiline button title to reinterpret.
+final class MenuBarBatteryLabel: NSView {
+    static let font = NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .medium)
+    static let lineHeight = ceil(font.ascender - font.descender + font.leading)
+
+    var text = "" {
+        didSet {
+            guard text != oldValue else { return }
+            needsDisplay = true
+        }
+    }
+
+    override var isFlipped: Bool { true }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        // Keep the entire status item clickable, including directly over the readout.
+        nil
+    }
+
+    var preferredWidth: CGFloat {
+        text.split(separator: "\n", omittingEmptySubsequences: false)
+            .prefix(2)
+            .map { ceil((String($0) as NSString).size(withAttributes: textAttributes).width) }
+            .max() ?? 0
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).prefix(2)
+        guard !lines.isEmpty else { return }
+
+        let totalHeight = Self.lineHeight * CGFloat(lines.count)
+        // Font ascender/descender metrics centre the line boxes, but this all-uppercase and
+        // numeric content has more visible ink on one side of the baseline. A one-point
+        // optical correction centres the pixels users actually see, not the invisible space.
+        let top = floor((bounds.height - totalHeight) / 2) - 1
+        for (index, line) in lines.enumerated() {
+            let rect = NSRect(
+                x: 0,
+                y: top + CGFloat(index) * Self.lineHeight,
+                width: bounds.width,
+                height: Self.lineHeight)
+            NSAttributedString(string: String(line), attributes: textAttributes).draw(
+                with: rect,
+                options: [.usesLineFragmentOrigin, .usesFontLeading, .truncatesLastVisibleLine])
+        }
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+
+    private var textAttributes: [NSAttributedString.Key: Any] {
+        [
+            .font: Self.font,
+            .foregroundColor: NSColor.labelColor,
+        ]
+    }
+}
+
 @main
 struct BudsBarApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
@@ -31,6 +97,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private lazy var quickControlMenu = QuickControlMenu(buds: buds)
     private lazy var globalHotKeyController = GlobalHotKeyController()
     private lazy var quickActionHUD = QuickActionHUDController()
+    private let menuBarIconView = NSImageView()
+    private let menuBarBatteryLabel = MenuBarBatteryLabel()
     private var localMouseMonitor: Any?
     private lazy var whatsNewPanelController = WhatsNewPanelController()
     private lazy var customEqualizerPanelController = CustomEqualizerPanelController(buds: buds)
@@ -86,8 +154,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.contentViewController = hostingController
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        statusItem.button?.target = self
-        statusItem.button?.action = #selector(togglePanel)
+        if let button = statusItem.button {
+            button.target = self
+            button.action = #selector(togglePanel)
+            button.title = ""
+            button.image = nil
+            menuBarIconView.imageScaling = .scaleProportionallyDown
+            menuBarIconView.contentTintColor = .labelColor
+            menuBarIconView.autoresizingMask = []
+            menuBarIconView.setAccessibilityElement(false)
+            menuBarBatteryLabel.autoresizingMask = []
+            button.addSubview(menuBarIconView)
+            button.addSubview(menuBarBatteryLabel)
+        }
         globalHotKeyController.onPress = { [weak self] in self?.buds.quickToggle() }
         buds.onQuickHotKeyChange = { [weak self] definition in
             self?.globalHotKeyController.replace(with: definition) ?? false
@@ -208,16 +287,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         if statusItem.isVisible, lastIconConnected != buds.isConnected {
             lastIconConnected = buds.isConnected
-            statusItem.button?.image = menuBarIcon
+            menuBarIconView.image = menuBarIcon
         }
         guard statusItem.isVisible, let button = statusItem.button else { return }
         let battery = buds.menuBarBatteryEnabled ? buds.menuBarBatteryPresentation : nil
-        statusItem.length = battery?.text == nil
-            ? NSStatusItem.squareLength : NSStatusItem.variableLength
-        button.title = battery?.text.map { " \($0)" } ?? ""
-        button.imagePosition = battery?.text == nil ? .imageOnly : .imageLeading
+        layoutStatusItem(button: button, batteryText: battery?.text)
         button.alphaValue = statusItemOpacity
         button.toolTip = statusItemTooltip
+    }
+
+    private func layoutStatusItem(button: NSStatusBarButton, batteryText: String?) {
+        let text = batteryText ?? ""
+        menuBarBatteryLabel.text = text
+        menuBarBatteryLabel.isHidden = text.isEmpty
+
+        let iconSize: CGFloat = 18
+        let outerPadding: CGFloat = 4
+        let textGap: CGFloat = 3
+        let textWidth = menuBarBatteryLabel.preferredWidth
+        statusItem.length = text.isEmpty
+            ? NSStatusItem.squareLength
+            : outerPadding + iconSize + textGap + textWidth + outerPadding
+
+        // Setting the item length updates the button bounds synchronously. Both child views
+        // occupy that real height; the label performs its own two-line vertical centring.
+        let height = button.bounds.height
+        let iconX = text.isEmpty ? floor((button.bounds.width - iconSize) / 2) : outerPadding
+        menuBarIconView.frame = NSRect(
+            x: iconX,
+            y: floor((height - iconSize) / 2),
+            width: iconSize,
+            height: iconSize)
+        menuBarBatteryLabel.frame = NSRect(
+            x: outerPadding + iconSize + textGap,
+            y: 0,
+            width: textWidth,
+            height: height)
     }
 
     @objc private func togglePanel() {
