@@ -22,9 +22,12 @@ jobs:
           swift test -c release
       - name: Package development app without production credentials
         run: |
-          bash build.sh debug
+          bash -x build.sh debug
           bash scripts/verify-app-bundle.sh
       - name: Test real signed feed and ZIP with a disposable key
         run: bash scripts/test-update-signatures.sh
-      - name: Check whitespace
-        run: git diff --check
+      - name: Check whitespace and shell syntax
+        run: |
+          git diff --check
+          bash -n build.sh
+          for script in scripts/*.sh; do bash -n "$script"; done
