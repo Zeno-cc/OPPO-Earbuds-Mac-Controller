@@ -20,3 +20,11 @@ jobs:
         run: |
           swift test
           swift test -c release
+      - name: Package development app without production credentials
+        run: |
+          bash build.sh debug
+          bash scripts/verify-app-bundle.sh
+      - name: Test real signed feed and ZIP with a disposable key
+        run: bash scripts/test-update-signatures.sh
+      - name: Check whitespace
+        run: git diff --check
