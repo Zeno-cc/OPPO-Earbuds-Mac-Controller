@@ -23,7 +23,8 @@ done
 FRAMEWORK="$APP/Contents/Frameworks/Sparkle.framework"
 [[ -L "$FRAMEWORK/Versions/Current" && -x "$FRAMEWORK/Sparkle" ]] || fail "damaged framework layout"
 [[ "$(read_plist "$FRAMEWORK/Resources/Info.plist" CFBundleShortVersionString)" == 2.9.6 ]] || fail "wrong Sparkle version"
-LINKS=$(/usr/bin/otool -L "$BINARY")
+# otool also prints the inspected binary's path, which is not a dependency.
+LINKS=$(/usr/bin/otool -L "$BINARY" | /usr/bin/awk -f "$ROOT/scripts/macho-load-paths.awk")
 /usr/bin/grep -q '@rpath/Sparkle.framework/' <<< "$LINKS" || fail "missing relocatable Sparkle linkage"
 RPATHS=$(/usr/bin/otool -l "$BINARY" | /usr/bin/awk '/cmd LC_RPATH/{r=1;next} r && /path /{sub(/^[[:space:]]*path /, ""); sub(/ \(offset [0-9]+\)$/, ""); print; r=0}')
 /usr/bin/grep -qx '@executable_path/../Frameworks' <<< "$RPATHS" || fail "missing bundle rpath"
