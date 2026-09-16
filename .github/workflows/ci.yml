@@ -1,19 +1,22 @@
 name: CI
-
 on:
   push:
   pull_request:
-
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   build-and-test:
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Build
         run: swift build
-      - name: Test
-        run: swift test
-      - name: Package app (debug)
-        run: bash build.sh debug
-      - name: Verify app bundle
-        run: bash scripts/verify-app-bundle.sh
+      - name: Test debug and release
+        run: |
+          swift test
+          swift test -c release

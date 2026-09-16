@@ -1,7 +1,6 @@
 # SwiftPM build products
 .build/
 .swiftpm/
-Package.resolved
 
 # Assembled app bundle — produced by build.sh
 OPPO Earbuds Mac Controller.app/
@@ -18,3 +17,11 @@ CLAUDE.md
 .cursor/
 AGENTS.md
 .gitattributes
+
+# Release products and local signing material (public keys may be committed).
+dist/
+*.private-key
+*.private-key.txt
+*.local.txt
+__pycache__/
+.build-app.*/
