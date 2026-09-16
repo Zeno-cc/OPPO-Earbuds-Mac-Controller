@@ -22,13 +22,12 @@ cp "$BIN_DIR/BudsBar" "$STAGED/Contents/MacOS/BudsBar"
 source "$ROOT/scripts/sparkle-paths.sh"
 sparkle_paths "$ROOT"
 /usr/bin/ditto "$SPARKLE_FRAMEWORK" "$STAGED/Contents/Frameworks/Sparkle.framework"
-# Ship the exact resolved dependency's license, not a manually abbreviated copy.
 SPARKLE_LICENSE="$ROOT/.build/checkouts/Sparkle/LICENSE"
 if [[ ! -f "$SPARKLE_LICENSE" ]]; then SPARKLE_LICENSE="$ROOT/.build/checkouts/sparkle/LICENSE"; fi
 [[ -f "$SPARKLE_LICENSE" ]] || { echo "Resolved Sparkle license not found" >&2; exit 1; }
 cp "$SPARKLE_LICENSE" "$STAGED/Contents/Resources/Sparkle-LICENSE.txt"
 
-# Remove development rpaths while preserving system-relative paths and the bundle rpath.
+# Remove development rpaths while preserving the bundle-relative runtime search path.
 /usr/bin/otool -l "$STAGED/Contents/MacOS/BudsBar" | /usr/bin/awk '
 /cmd LC_RPATH/{r=1;next}
 r && /path /{sub(/^[[:space:]]*path /, ""); sub(/ \(offset [0-9]+\)$/, ""); print; r=0}' > "$WORK/rpaths"
@@ -39,14 +38,20 @@ if ! /usr/bin/grep -qx '@executable_path/../Frameworks' "$WORK/rpaths"; then
     /usr/bin/install_name_tool -add_rpath '@executable_path/../Frameworks' "$STAGED/Contents/MacOS/BudsBar"
 fi
 
-ACTOOL=$(/usr/bin/xcrun --find actool)
+# Resolve within the selected Xcode first: hosted macOS can have a broken xcrun cache.
+# Do not reset global developer settings or modify the user's tool caches.
+SELECTED_DEVELOPER_DIR=${DEVELOPER_DIR:-$(/usr/bin/xcode-select -p)}
+ACTOOL="$SELECTED_DEVELOPER_DIR/usr/bin/actool"
+if [[ ! -x "$ACTOOL" ]]; then ACTOOL=$(/usr/bin/xcrun --find actool); fi
+[[ -x "$ACTOOL" ]] || { echo "Xcode 26 actool is required" >&2; exit 1; }
+echo "Compiling App icon with selected Xcode actool"
 "$ACTOOL" Resources/AppIcon.icon --compile "$STAGED/Contents/Resources" \
     --output-format human-readable-text --notices --warnings \
     --output-partial-info-plist "$WORK/icon-info.plist" --app-icon AppIcon \
     --enable-on-demand-resources NO --development-region en --target-device mac \
     --minimum-deployment-target 26.0 --platform macosx \
     --bundle-identifier com.aniketbudhwani.budsbar
-# Keep the signed nested Sparkle helpers untouched; sign the outer App last.
+# Keep the signed nested Sparkle helpers intact; sign the outer App last.
 /usr/bin/codesign --verify --deep --strict "$STAGED/Contents/Frameworks/Sparkle.framework"
 /usr/bin/codesign --force --sign - "$STAGED"
 if [[ "$CONFIG" == release ]]; then

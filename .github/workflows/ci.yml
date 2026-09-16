@@ -26,8 +26,19 @@ jobs:
           bash scripts/verify-app-bundle.sh
       - name: Test real signed feed and ZIP with a disposable key
         run: bash scripts/test-update-signatures.sh
+      - name: Test real Sparkle installer on an isolated App
+        timeout-minutes: 10
+        run: bash scripts/test-update-install.sh
       - name: Check whitespace and shell syntax
         run: |
           git diff --check
           bash -n build.sh
           for script in scripts/*.sh; do bash -n "$script"; done
+  release-tooling:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Negative release and configuration tests
+        run: python3 -m unittest discover -s Tests/ReleaseTests -v

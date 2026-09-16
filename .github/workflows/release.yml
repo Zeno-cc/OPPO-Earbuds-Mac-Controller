@@ -1,0 +1,61 @@
+name: Prepare signed release draft
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Stable X.Y.Z matching committed Info.plist
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: signed-release
+  cancel-in-progress: false
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/main'
+    runs-on: macos-26
+    environment: release
+    permissions:
+      contents: write
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+      SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate release input
+        run: |
+          python3 - <<'PY'
+          import os,re
+          if not re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)',os.environ['RELEASE_VERSION']):
+              raise SystemExit('Invalid stable version')
+          if not os.environ['SPARKLE_PUBLIC_ED_KEY']: raise SystemExit('Configure release public-key variable first')
+          PY
+      - name: Prepare protected signing key
+        env:
+          PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_ED_KEY }}
+        run: |
+          set +x
+          umask 077
+          python3 - <<'PY'
+          import base64,os,pathlib
+          encoded=os.environ['PRIVATE_KEY'].strip()
+          try:
+              assert len(base64.b64decode(encoded,validate=True)) in (32,96)
+          except Exception:
+              raise SystemExit('Invalid signing secret (redacted)')
+          path=pathlib.Path(os.environ['RUNNER_TEMP'])/'sparkle.private-key'
+          path.write_text(encoded); path.chmod(0o600)
+          with open(os.environ['GITHUB_ENV'],'a') as stream:
+              stream.write(f'SPARKLE_PRIVATE_KEY_FILE={path}\n')
+          PY
+      - name: Generate and validate signed artifacts
+        run: bash scripts/release.sh "$RELEASE_VERSION"
+      - name: Upload and verify draft
+        run: bash scripts/publish-release.sh "$RELEASE_VERSION"
+      - name: Remove temporary key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/sparkle.private-key"
