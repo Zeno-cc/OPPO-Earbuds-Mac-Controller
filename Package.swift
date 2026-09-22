@@ -24,6 +24,9 @@ let swiftUIMacros: [SwiftSetting] = {
 let package = Package(
     name: "BudsBar",
     platforms: [.macOS(.v26)],
+    dependencies: [
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.6")
+    ],
     targets: [
         .target(
             name: "BudsCore",
@@ -31,12 +34,15 @@ let package = Package(
             swiftSettings: [.swiftLanguageMode(.v5)]),
         .executableTarget(
             name: "BudsBar",
-            dependencies: ["BudsCore"],
+            dependencies: ["BudsCore", .product(name: "Sparkle", package: "Sparkle")],
             path: "Sources/BudsBar",
             // Everything here runs on the main thread apart from two explicit
             // dispatches, and IOBluetooth predates Sendable. Strict concurrency
             // checking buys nothing but ceremony at this size.
-            swiftSettings: [.swiftLanguageMode(.v5)] + swiftUIMacros),
+            swiftSettings: [.swiftLanguageMode(.v5)] + swiftUIMacros,
+            linkerSettings: [.unsafeFlags([
+                "-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"
+            ])]),
         .testTarget(
             name: "BudsBarTests",
             dependencies: ["BudsCore", "BudsBar"],

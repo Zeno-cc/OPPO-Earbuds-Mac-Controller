@@ -81,9 +81,11 @@ struct BudsBarApp: App {
     }
 }
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private let buds = Buds()
+    private let updates = UpdateCoordinator()
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
     /// nil until the first sync, so the icon is always drawn once at launch.
@@ -149,7 +151,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // instead, by watching for a click outside.
         popover.behavior = .applicationDefined
         popover.delegate = self
-        let hostingController = NSHostingController(rootView: PanelView(buds: buds))
+        let hostingController = NSHostingController(rootView: PanelView(buds: buds).environment(updates))
         hostingController.sizingOptions = [.preferredContentSize, .intrinsicContentSize]
         popover.contentViewController = hostingController
 
@@ -236,6 +238,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         syncDockIcon()
         syncStatusItem()
+        updates.beforePresentingUI = { [weak self] in self?.popover.performClose(nil) }
+        updates.start()
     }
 
     private func syncDockIcon() {
