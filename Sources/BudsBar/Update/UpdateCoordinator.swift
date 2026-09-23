@@ -67,6 +67,13 @@ final class UpdateCoordinator: NSObject, SPUUpdaterDelegate, SPUStandardUserDriv
         controller.checkForUpdates(nil)
     }
 
+    func checkForUpdateInformation() {
+        guard let updater = controller?.updater,
+              canCheckForUpdates, !updater.sessionInProgress else { return }
+        presentation.begin()
+        updater.checkForUpdateInformation()
+    }
+
     func setAutomaticallyChecks(_ enabled: Bool) {
         guard let controller, isConfigured else { return }
         controller.updater.automaticallyChecksForUpdates = enabled
@@ -113,6 +120,11 @@ final class UpdateCoordinator: NSObject, SPUUpdaterDelegate, SPUStandardUserDriv
         presentation.advance(to: .installing(item.displayVersionString))
     }
     func userDidCancelDownload(_ updater: SPUUpdater) { presentation.cancel() }
+    func updater(_ updater: SPUUpdater, userDidMake choice: SPUUserUpdateChoice,
+                 forUpdate updateItem: SUAppcastItem, state: SPUUserUpdateState) {
+        if choice == .skip { presentation.skip() }
+        else if choice == .dismiss { presentation.cancel() }
+    }
     func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
         record(error)
         if isCancellation(error) { presentation.cancel() } else { presentation.fail() }

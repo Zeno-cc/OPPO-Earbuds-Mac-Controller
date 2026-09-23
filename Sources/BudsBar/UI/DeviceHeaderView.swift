@@ -262,8 +262,16 @@ private struct MoreOptionsView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                inspectorGroup("关于") {
-                    SoftwareUpdateSection()
+                VStack(alignment: .leading, spacing: PanelDesignTokens.spacing8) {
+                    HStack {
+                        Text("关于")
+                            .font(.system(
+                                size: PanelDesignTokens.inspectorGroupTitleSize,
+                                weight: .semibold))
+                            .foregroundStyle(.secondary.opacity(0.9))
+                        Spacer()
+                        SoftwareUpdateButton()
+                    }
                     HStack {
                         Button("v1.5 新功能") { buds.showWhatsNew() }
                             .buttonStyle(.borderless)
@@ -274,6 +282,7 @@ private struct MoreOptionsView: View {
                     }
                     .font(.callout)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(PanelDesignTokens.spacing20)
         }

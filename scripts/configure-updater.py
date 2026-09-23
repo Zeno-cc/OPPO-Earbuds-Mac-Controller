@@ -52,11 +52,15 @@ def configure(info, configuration, key, test_build=False, test_feed=None):
         if result.get(name) is not False:
             raise ValueError(name + " must remain disabled")
     result.pop("SUPublicEDKey", None)
-    if key:
-        result["SUPublicEDKey"] = public_key(key)
-    elif configuration == "release":
+    if configuration == "release" and test_build:
+        raise ValueError("Release cannot be marked as a test build")
+    if configuration == "release" and not key:
         raise ValueError("Release requires SPARKLE_PUBLIC_ED_KEY or Resources/SparklePublicKey.txt")
-    if configuration == "debug" or test_build or not key:
+    if test_build and not key:
+        raise ValueError("Marked test build requires an explicit Sparkle public key")
+    if configuration == "release" or test_build:
+        result["SUPublicEDKey"] = public_key(key)
+    if configuration == "debug":
         result["SUEnableAutomaticChecks"] = False
     result["BudsBarUpdateTestBuild"] = test_build
     return result
@@ -71,14 +75,18 @@ def main():
     parser.add_argument("--test-feed-url")
     args = parser.parse_args()
     key = os.environ.get("SPARKLE_PUBLIC_ED_KEY")
-    if not key and args.public_key_file and args.public_key_file.exists():
+    if args.configuration == "debug" and not args.test_build:
+        key = None
+    elif args.test_build and not key:
+        raise ValueError("Marked test build requires SPARKLE_PUBLIC_ED_KEY")
+    elif not key and args.public_key_file and args.public_key_file.exists():
         key = args.public_key_file.read_text(encoding="utf-8").strip()
     updated = configure(plistlib.loads(args.plist.read_bytes()), args.configuration,
                         key, args.test_build, args.test_feed_url)
     temporary = args.plist.with_name(args.plist.name + ".tmp")
     temporary.write_bytes(plistlib.dumps(updated, sort_keys=False))
     temporary.replace(args.plist)
-    print("Updater configuration: " + ("signed updates" if key else "disabled development build"))
+    print("Updater configuration: " + ("signed updates" if "SUPublicEDKey" in updated else "disabled development build"))
 
 
 if __name__ == "__main__":

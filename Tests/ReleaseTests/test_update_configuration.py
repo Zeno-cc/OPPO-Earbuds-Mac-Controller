@@ -28,6 +28,15 @@ class UpdateConfigurationTests(unittest.TestCase):
         self.assertNotIn("SUPublicEDKey", result)
         self.assertIs(result["SUEnableAutomaticChecks"], False)
 
+    def test_ordinary_debug_does_not_embed_production_key(self):
+        result = CONFIG.configure(self.info, "debug", self.key)
+        self.assertNotIn("SUPublicEDKey", result)
+        self.assertIs(result["SUEnableAutomaticChecks"], False)
+
+    def test_marked_debug_requires_explicit_key(self):
+        with self.assertRaises(ValueError):
+            CONFIG.configure(self.info, "debug", None, True)
+
     def test_marked_debug_accepts_loopback_feed(self):
         feed = "http://localhost:8765/appcast.xml"
         result = CONFIG.configure(self.info, "debug", self.key, True, feed)

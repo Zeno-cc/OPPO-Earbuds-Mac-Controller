@@ -37,6 +37,8 @@
 
 在 Releases 页面下载 `.dmg` 安装包。双击打开后，把应用图标拖到“应用程序”快捷方式即可完成安装。
 
+从 v1.5.0 升级到 v1.5.1 也请先手动安装 DMG：v1.5.0 尚未内置自动更新。v1.5.1 起可在“更多 → 关于”点击小更新图标检查版本；发现新版本后图标变蓝，再点击即可查看并安装。自动检查更新不会自动安装或强制重启。由于应用目前采用 ad-hoc 签名，更新后 macOS 可能再次请求蓝牙权限；允许后才能继续控制耳机。
+
 如果 macOS 阻止打开，请在终端执行：
 
 ```bash
@@ -58,7 +60,7 @@ xattr -cr "/Applications/OPPO Earbuds Mac Controller.app"
 
 ## 开发验证
 
-运行 `swift test` 执行回归测试，`bash build.sh debug` 构建本目录中的应用，`bash scripts/verify-app-bundle.sh` 检查可执行文件、版本、macOS 要求、图标资源和签名。构建与验证不会自动启动或安装应用。
+运行 `swift test` 执行回归测试，`bash build.sh debug` 构建本目录中的应用，`bash scripts/verify-app-bundle.sh` 检查可执行文件、版本、macOS 要求、图标资源和签名。构建与验证不会自动启动或安装应用。正式更新资产的本地准备流程见 [发版说明](docs/RELEASING.md)。
 
 高级控制功能的证据边界与手机侧采集要求见 [Air5 Pro 协议证据](docs/AIR5_PROTOCOL_EVIDENCE.md)。耳机的双设备自动连接由耳机/官方手机体验负责，本应用不提供优先设备或手动切源控制；本应用提供盒内/盒外位置状态，但不提供入耳检测。自定义 EQ 已完成协议、耳机端管理以及 Mac 本地方案保存/离线载入的实机验收，跨端冲突与失败场景仍需单独补充证据。Alive Audio 已取消，不属于开发范围。
 

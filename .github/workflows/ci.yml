@@ -13,7 +13,13 @@ jobs:
         run: swift build
       - name: Test
         run: swift test
+      - name: Test optimized build
+        run: swift test -c release
+      - name: Test release configuration
+        run: python3 -m unittest discover -s Tests/ReleaseTests -v
       - name: Package app (debug)
         run: bash build.sh debug
       - name: Verify app bundle
         run: bash scripts/verify-app-bundle.sh
+      - name: Check disposable update signatures
+        run: bash scripts/test-update-signatures.sh

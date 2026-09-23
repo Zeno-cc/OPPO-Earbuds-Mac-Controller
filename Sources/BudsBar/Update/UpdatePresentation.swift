@@ -38,18 +38,40 @@ enum AppUpdatePhase: Equatable {
 struct UpdatePresentation: Equatable {
     private(set) var phase: AppUpdatePhase = .idle
     private(set) var lastCheckedAt: Date?
+    private(set) var availableVersion: String?
     private var receivedNoUpdate = false
     private var cancelled = false
 
     mutating func begin() { receivedNoUpdate = false; cancelled = false; phase = .checking }
-    mutating func found(_ version: String, at date: Date) { lastCheckedAt = date; phase = .available(version) }
-    mutating func noUpdate(at date: Date) { receivedNoUpdate = true; lastCheckedAt = date; phase = .noUpdate }
+    mutating func found(_ version: String, at date: Date) {
+        availableVersion = version
+        lastCheckedAt = date
+        phase = .available(version)
+    }
+    mutating func noUpdate(at date: Date) {
+        receivedNoUpdate = true
+        availableVersion = nil
+        lastCheckedAt = date
+        phase = .noUpdate
+    }
     mutating func advance(to next: AppUpdatePhase) { phase = next }
-    mutating func cancel() { cancelled = true; phase = .idle }
+    mutating func cancel() {
+        cancelled = true
+        phase = availableVersion.map(AppUpdatePhase.available) ?? .idle
+    }
+    mutating func skip() {
+        cancelled = true
+        availableVersion = nil
+        phase = .idle
+    }
     mutating func fail() { guard !receivedNoUpdate, !cancelled else { return }; phase = .failed }
     mutating func finish(hasError: Bool) {
         if hasError { fail(); return }
-        switch phase { case .checking, .available, .downloading, .verifying: phase = .idle; default: break }
+        switch phase {
+        case .checking, .downloading, .verifying:
+            phase = availableVersion.map(AppUpdatePhase.available) ?? .idle
+        default: break
+        }
     }
 }
 
