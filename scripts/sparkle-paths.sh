@@ -13,4 +13,12 @@ sparkle_paths() {
         fi
     done < <(/usr/bin/find "$root/.build/artifacts" -type d -name Sparkle.framework -prune 2>/dev/null)
     [[ -n "$SPARKLE_FRAMEWORK" ]] || { echo "Pinned Sparkle framework not found; run swift build." >&2; return 1; }
+    SPARKLE_BIN=""
+    while IFS= read -r candidate; do
+        [[ -z "$SPARKLE_BIN" ]] || { echo "Multiple Sparkle tool directories." >&2; return 1; }
+        SPARKLE_BIN=$(dirname "$candidate")
+    done < <(/usr/bin/find "$root/.build/artifacts" -type f -path '*/bin/generate_appcast' 2>/dev/null)
+    [[ -n "$SPARKLE_BIN" && -x "$SPARKLE_BIN/sign_update" && -x "$SPARKLE_BIN/generate_keys" ]] || {
+        echo "Pinned SwiftPM artifact is missing its official release tools." >&2; return 1;
+    }
 }
