@@ -5,10 +5,11 @@ import SwiftUI
 
 struct ConnectionHUDView: View {
     @ObservedObject var model: ConnectionHUDViewModel
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    private var reduceMotion: Bool { systemReduceMotion || model.reduceMotion }
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
-    @State private var isHovered = false
+    private var isHovered: Bool { model.isHovered }
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
@@ -34,7 +35,6 @@ struct ConnectionHUDView: View {
             .scaleEffect(surfaceScale)
             .opacity(model.presentationState == .hidden ? 0 : 1)
             .onHover { hovering in
-                isHovered = hovering
                 model.onHoverChange?(hovering)
             }
             .animation(containerAnimation, value: model.presentationState.usesExpandedGeometry)
@@ -44,6 +44,14 @@ struct ConnectionHUDView: View {
             .animation(.easeOut(duration: MotionTokens.fast), value: isHovered)
             .accessibilityElement(children: .combine)
             .accessibilityLabel(accessibilitySummary)
+            // AppKit fades the whole window in reduced mode; no SwiftUI transaction
+            // may interpolate the card's frame, typography or artwork underneath it.
+            .transaction {
+                if reduceMotion {
+                    $0.animation = nil
+                    $0.disablesAnimations = true
+                }
+            }
     }
 
     private var content: some View {
@@ -81,10 +89,12 @@ struct ConnectionHUDView: View {
             Image(systemName: "circle.fill")
                 .font(.system(size: 6, weight: .semibold))
                 .foregroundStyle(statusColor)
-                .symbolEffect(.pulse, value: model.connectedPulseTrigger)
+                .symbolEffect(.pulse, value: reduceMotion ? 0 : model.connectedPulseTrigger)
             Text(eventTitle)
                 .font(.system(size: isExpandedGeometry ? 12.5 : 11.5, weight: .medium))
                 .foregroundStyle(.secondary)
+                .contentTransition(.opacity)
+                .animation(MotionTokens.feedback, value: model.event)
         }
     }
 
@@ -105,6 +115,8 @@ struct ConnectionHUDView: View {
                         .lineLimit(1)
                         .opacity(model.presentationState.showsMode ? 1 : 0)
                         .offset(y: modeOffset)
+                        .contentTransition(.opacity)
+                        .animation(MotionTokens.feedback, value: summary)
                 }
             }
             .padding(.top, 2)
@@ -190,7 +202,7 @@ struct ConnectionHUDView: View {
     }
 
     private var containerAnimation: Animation? {
-        guard !reduceMotion else { return .easeOut(duration: HUDMotionTokens.reducedTransition) }
+        guard !reduceMotion else { return nil }
         return .spring(
             response: HUDMotionTokens.springResponse,
             dampingFraction: HUDMotionTokens.springDamping)

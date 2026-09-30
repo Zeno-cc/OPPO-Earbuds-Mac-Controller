@@ -53,15 +53,18 @@ struct BatteryStripView: View {
                     Image(systemName: "bolt.fill")
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.green)
-                        .transition(.scale(scale: 0.8).combined(with: .opacity))
+                        .transition(reduceMotion
+                            ? .opacity : .scale(scale: 0.8).combined(with: .opacity))
                 }
             }
+            .animation(reduceMotion ? MotionTokens.feedback : MotionTokens.state(reduceMotion: false), value: isCharging)
             if let level {
                 Text("\(level)%")
                     .font(.system(size: 20, weight: .semibold, design: .rounded))
                     .monospacedDigit()
-                    .contentTransition(.numericText(value: Double(level)))
+                    .contentTransition(reduceMotion ? .identity : .numericText(value: Double(level)))
                     .foregroundStyle(isStowed ? .secondary : .primary)
+                    .transaction { if reduceMotion { $0.animation = nil } }
                 Capsule()
                     .fill(Color.primary.opacity(PanelDesignTokens.batteryTrackOpacity))
                     .frame(
@@ -78,6 +81,7 @@ struct BatteryStripView: View {
                                 height: PanelDesignTokens.batteryBarHeight)
                     }
                     .accessibilityHidden(true)
+                    .transaction { if reduceMotion { $0.animation = nil } }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -88,7 +92,7 @@ struct BatteryStripView: View {
         .help(item.accessibilityName)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityDescription)
-        .animation(MotionTokens.state(reduceMotion: reduceMotion), value: isCharging)
+        .animation(MotionTokens.geometry(reduceMotion: reduceMotion), value: isCharging)
         .animation(
             reduceMotion ? nil : .easeOut(duration: MotionTokens.battery),
             value: level)

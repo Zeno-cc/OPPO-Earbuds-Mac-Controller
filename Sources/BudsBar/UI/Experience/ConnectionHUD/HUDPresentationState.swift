@@ -18,31 +18,32 @@ enum HUDPresentationState: Equatable {
     case expanded
     case collapsing(HUDCollapsePhase)
     case dismissing
+    case fadingExpanded
 
     var usesExpandedGeometry: Bool {
         switch self {
-        case .expanding, .expanded, .collapsing(.content): true
+        case .expanding, .expanded, .collapsing(.content), .fadingExpanded: true
         case .hidden, .compact, .collapsing(.container), .dismissing: false
         }
     }
 
     var keepsSecondaryLayout: Bool {
         switch self {
-        case .expanding, .expanded, .collapsing(.content): true
+        case .expanding, .expanded, .collapsing(.content), .fadingExpanded: true
         case .hidden, .compact, .collapsing(.container), .dismissing: false
         }
     }
 
     var showsBattery: Bool {
         switch self {
-        case .expanding(.battery), .expanding(.complete), .expanded: true
+        case .expanding(.battery), .expanding(.complete), .expanded, .fadingExpanded: true
         case .hidden, .compact, .expanding(.container), .collapsing, .dismissing: false
         }
     }
 
     var showsMode: Bool {
         switch self {
-        case .expanding(.complete), .expanded: true
+        case .expanding(.complete), .expanded, .fadingExpanded: true
         case .hidden, .compact, .expanding, .collapsing, .dismissing: false
         }
     }
@@ -50,16 +51,37 @@ enum HUDPresentationState: Equatable {
 
 struct HUDPresentationLifecycle {
     private(set) var state: HUDPresentationState = .hidden
+    private(set) var reduceMotion = false
 
     @discardableResult
-    mutating func start() -> HUDPresentationState {
-        state = .compact
+    mutating func start(reduceMotion: Bool = false) -> HUDPresentationState {
+        self.reduceMotion = reduceMotion
+        state = reduceMotion ? .expanded : .compact
         return state
     }
 
     @discardableResult
-    mutating func restartExpansion() -> HUDPresentationState {
-        state = .expanding(.container)
+    mutating func restartExpansion(preservingExpandedContent: Bool = false) -> HUDPresentationState {
+        state = reduceMotion || preservingExpandedContent ? .expanded : .expanding(.container)
+        return state
+    }
+
+    /// Keep the current presentation reduced even if the preference is switched back off.
+    /// The next presentation reads the current preference afresh.
+    @discardableResult
+    mutating func enableReducedMotion() -> HUDPresentationState {
+        reduceMotion = true
+        switch state {
+        case .hidden: break
+        case .collapsing, .dismissing, .fadingExpanded: state = .fadingExpanded
+        default: state = .expanded
+        }
+        return state
+    }
+
+    @discardableResult
+    mutating func beginDismissal() -> HUDPresentationState {
+        state = reduceMotion ? .fadingExpanded : .dismissing
         return state
     }
 
@@ -77,12 +99,12 @@ struct HUDPresentationLifecycle {
         case .expanding(.complete):
             state = .expanded
         case .expanded:
-            state = .collapsing(.content)
+            state = reduceMotion ? .fadingExpanded : .collapsing(.content)
         case .collapsing(.content):
             state = .collapsing(.container)
         case .collapsing(.container):
             state = .dismissing
-        case .dismissing:
+        case .dismissing, .fadingExpanded:
             state = .hidden
         }
         return state

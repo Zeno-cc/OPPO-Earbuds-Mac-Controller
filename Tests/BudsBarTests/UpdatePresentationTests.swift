@@ -56,4 +56,25 @@ import Testing
         #expect(presentation.phase == .failed)
         #expect(presentation.availableVersion == "1.5.2")
     }
+
+    @Test func failedIconOutranksKnownVersionAndStaleCheckmark() {
+        var presentation = UpdatePresentation()
+        presentation.found("1.5.2", at: Date())
+        presentation.begin()
+        presentation.fail()
+        #expect(presentation.buttonSymbol(showsNoUpdateCheck: true) == "exclamationmark.circle")
+        #expect(presentation.availableVersion == "1.5.2")
+        presentation.begin()
+        #expect(presentation.buttonSymbol(showsNoUpdateCheck: true) == nil)
+        presentation.found("1.5.2", at: Date())
+        #expect(presentation.buttonSymbol(showsNoUpdateCheck: true) == "arrow.down.circle.fill")
+    }
+
+    @Test func noUpdateIconReturnsToIdleAfterTransientFeedback() {
+        var presentation = UpdatePresentation()
+        presentation.begin()
+        presentation.noUpdate(at: Date())
+        #expect(presentation.buttonSymbol(showsNoUpdateCheck: true) == "checkmark.circle")
+        #expect(presentation.buttonSymbol(showsNoUpdateCheck: false) == "arrow.down.circle")
+    }
 }

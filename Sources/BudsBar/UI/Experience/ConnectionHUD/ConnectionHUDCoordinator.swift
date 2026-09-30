@@ -10,6 +10,7 @@ final class ConnectionHUDCoordinator {
     private var disconnectWorkItem: DispatchWorkItem?
     private var readinessWorkItem: DispatchWorkItem?
     private var waitingEvent: ConnectionHUDEvent?
+    private var latestObservation: ConnectionExperienceObservation?
 
     init(
         panelController: ConnectionHUDPanelController = ConnectionHUDPanelController(),
@@ -24,6 +25,25 @@ final class ConnectionHUDCoordinator {
     }
 
     func observe(_ observation: ConnectionExperienceObservation, at date: Date = Date()) {
+        let identityChanged = latestObservation.map {
+            $0.deviceIdentity != observation.deviceIdentity
+        } ?? false
+        latestObservation = observation
+        if identityChanged {
+            clearWaitingPresentation()
+            panelController.dismissImmediately()
+        }
+        if let waitingEvent, !isApplicable(waitingEvent) {
+            clearWaitingPresentation()
+        }
+        if let visibleEvent = panelController.visibleEvent,
+           !isApplicable(visibleEvent) || isSlotBusy() {
+            panelController.dismissImmediately()
+        }
+
+        for effect in experience.observe(observation, at: date) {
+            handle(effect)
+        }
         if let waitingEvent, !isSlotBusy() {
             let current = snapshot(waitingEvent)
             if current.hasPresentationDetails {
@@ -33,20 +53,15 @@ final class ConnectionHUDCoordinator {
         if let visibleEvent = panelController.visibleEvent {
             panelController.update(snapshot: snapshot(visibleEvent))
         }
-
-        for effect in experience.observe(observation, at: date) {
-            handle(effect)
-        }
     }
 
     func stabilize(with observation: ConnectionExperienceObservation) {
+        latestObservation = observation
         for effect in experience.rebaseline(observation) {
             handle(effect)
         }
-        readinessWorkItem?.cancel()
-        readinessWorkItem = nil
-        waitingEvent = nil
-        panelController.dismiss()
+        clearWaitingPresentation()
+        panelController.dismissImmediately()
     }
 
     /// Called when another HUD takes the shared slot.
@@ -58,7 +73,7 @@ final class ConnectionHUDCoordinator {
 
     /// Called when the shared slot is free again, so a deferred event can land.
     func retryDeferredPresentation() {
-        guard let waitingEvent, !isSlotBusy() else { return }
+        guard let waitingEvent else { return }
         beginPresentation(waitingEvent)
     }
 
@@ -86,10 +101,8 @@ final class ConnectionHUDCoordinator {
     }
 
     private func beginPresentation(_ event: ConnectionHUDEvent) {
-        readinessWorkItem?.cancel()
-        readinessWorkItem = nil
-        waitingEvent = nil
-        guard isEnabled(event) else { return }
+        clearWaitingPresentation()
+        guard isApplicable(event) else { return }
         // The quick-action HUD wins the slot; keep the event queued instead of dropping it.
         guard !isSlotBusy() else {
             waitingEvent = event
@@ -112,9 +125,28 @@ final class ConnectionHUDCoordinator {
     }
 
     private func show(_ event: ConnectionHUDEvent, snapshot: HUDSnapshot) {
+        clearWaitingPresentation()
+        guard isApplicable(event) else { return }
+        guard !isSlotBusy() else {
+            waitingEvent = event
+            return
+        }
+        panelController.show(event: event, snapshot: snapshot)
+    }
+
+    private func isApplicable(_ event: ConnectionHUDEvent) -> Bool {
+        guard let observation = latestObservation, isEnabled(event) else { return false }
+        switch event {
+        case .connected, .reconnected:
+            return observation.isConnected
+        case .unexpectedDisconnected:
+            return !observation.isConnected && !observation.suppressUnexpectedDisconnect
+        }
+    }
+
+    private func clearWaitingPresentation() {
         readinessWorkItem?.cancel()
         readinessWorkItem = nil
         waitingEvent = nil
-        panelController.show(event: event, snapshot: snapshot)
     }
 }

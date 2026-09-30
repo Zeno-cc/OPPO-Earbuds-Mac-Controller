@@ -179,6 +179,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         buds.onQuickActionFeedback = { [weak self] feedback in
             self?.quickActionHUD.show(feedback)
         }
+        buds.onQuickActionFeedbackDismissed = { [weak self] in
+            self?.quickActionHUD.dismissImmediately()
+        }
         // The quick HUD and the connection HUD share one screen slot. A user-triggered
         // action wins it; a connection event that arrives meanwhile is queued, not lost.
         quickActionHUD.onVisibilityChange = { [weak self] visible in
@@ -212,7 +215,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             }
         }
         buds.onWhatsNewRequested = { [weak self] in
-            self?.whatsNewPanelController.show()
+            guard let self else { return }
+            self.popover.performClose(nil)
+            self.whatsNewPanelController.show()
         }
         buds.onCustomEqualizerRequested = { [weak self] in
             guard let self else { return }
@@ -347,7 +352,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // The panel is rebuilt from live state each time it opens rather than showing
         // whatever it last rendered.
         buds.refreshConnectionState()
-        buds.panelWillOpen()
+        guard !buds.panelWillOpen() else { return }
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         popover.contentViewController?.view.window?.makeKey()
 
@@ -402,7 +407,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var connectionObservation: ConnectionExperienceObservation {
         ConnectionExperienceObservation(
             isConnected: buds.isConnected,
-            suppressUnexpectedDisconnect: buds.suppressesUnexpectedDisconnectPresentation)
+            suppressUnexpectedDisconnect: buds.suppressesUnexpectedDisconnectPresentation,
+            deviceIdentity: buds.selectedDeviceAddress)
     }
 
     private var statusItemOpacity: CGFloat {

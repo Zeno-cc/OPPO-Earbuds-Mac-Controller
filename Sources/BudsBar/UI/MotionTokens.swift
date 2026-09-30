@@ -8,7 +8,15 @@ enum MotionTokens {
     static let battery: TimeInterval = 0.22
 
     static func state(reduceMotion: Bool) -> Animation? {
-        reduceMotion ? .easeOut(duration: fast) : .easeOut(duration: standard)
+        geometry(reduceMotion: reduceMotion)
+    }
+
+    static func geometry(reduceMotion: Bool) -> Animation? {
+        reduceMotion ? nil : .easeOut(duration: standard)
+    }
+
+    static var feedback: Animation {
+        .easeOut(duration: fast)
     }
 
     static func hudEntry(reduceMotion: Bool) -> Animation {

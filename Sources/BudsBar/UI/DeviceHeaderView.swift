@@ -3,7 +3,6 @@ import SwiftUI
 
 struct DeviceHeaderView: View {
     @Bindable var buds: Buds
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isMorePresented = false
     @State private var isMoreHovered = false
 
@@ -38,10 +37,13 @@ struct DeviceHeaderView: View {
                 moreButton
             }
 
-            if buds.isConnected {
-                BatteryStripView(buds: buds)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+            Group {
+                if buds.isConnected {
+                    BatteryStripView(buds: buds)
+                        .transition(.opacity)
+                }
             }
+            .animation(MotionTokens.feedback, value: buds.isConnected)
         }
     }
 
@@ -101,6 +103,8 @@ struct DeviceHeaderView: View {
         .padding(.horizontal, 7)
         .padding(.vertical, 3)
         .background(connectionColor.opacity(0.12), in: .capsule)
+        .contentTransition(.opacity)
+        .animation(MotionTokens.feedback, value: connectionSummary)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("连接状态，\(connectionSummary)")
     }
@@ -144,11 +148,11 @@ struct DeviceHeaderView: View {
                         }
                 }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PanelPressButtonStyle())
         .frame(width: PanelDesignTokens.moreButtonHitSize, height: PanelDesignTokens.moreButtonHitSize)
         .contentShape(.rect)
         .onHover { isMoreHovered = $0 }
-        .animation(MotionTokens.state(reduceMotion: reduceMotion), value: highlighted)
+        .animation(MotionTokens.feedback, value: highlighted)
         .accessibilityLabel("详情")
         .help("详情")
         .popover(
@@ -161,15 +165,8 @@ struct DeviceHeaderView: View {
     }
 }
 
-enum DeviceInformationRefreshFeedback {
-    static func nextTrigger(current: Int, didEnqueue: Bool) -> Int {
-        didEnqueue ? current + 1 : current
-    }
-}
-
 private struct MoreOptionsView: View {
     @Bindable var buds: Buds
-    @State private var deviceInformationRefreshTrigger = 0
 
     var body: some View {
         ScrollView(.vertical) {
@@ -177,25 +174,10 @@ private struct MoreOptionsView: View {
                 if buds.supportsDeviceInformation {
                     inspectorGroup("设备") {
                         deviceInformation
-                        Button {
-                            deviceInformationRefreshTrigger =
-                                DeviceInformationRefreshFeedback.nextTrigger(
-                                    current: deviceInformationRefreshTrigger,
-                                    didEnqueue: buds.refreshDeviceInformation())
-                        } label: {
-                            Label {
-                                Text("刷新设备信息")
-                            } icon: {
-                                Image(systemName: "arrow.clockwise")
-                                    .symbolEffect(
-                                        .rotate,
-                                        value: deviceInformationRefreshTrigger)
-                            }
-                        }
-                        .buttonStyle(.borderless)
-                        .controlSize(.small)
-                        .foregroundStyle(Color.accentColor)
-                        .disabled(!buds.isConnected)
+                        DeviceInformationRefreshButton(
+                            state: buds.deviceInformationRefresh,
+                            isConnected: buds.isConnected,
+                            refresh: { _ = buds.refreshDeviceInformation() })
                     }
                 }
 
@@ -320,9 +302,14 @@ private struct MoreOptionsView: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
         case .failed(let message):
-            Text(message)
-                .font(.callout)
-                .foregroundStyle(.secondary)
+            // The refresh row already shows this query's failure, including without cache.
+            if case .failed = buds.deviceInformationRefresh {
+                EmptyView()
+            } else {
+                Text(message)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
         case .unknown:
             Text("设备信息尚未读取")
                 .font(.callout)

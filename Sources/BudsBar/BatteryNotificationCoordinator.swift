@@ -3,12 +3,15 @@ import Foundation
 import UserNotifications
 
 final class BatteryNotificationCoordinator {
-    private let center: UNUserNotificationCenter
+    private let suppliedCenter: UNUserNotificationCenter?
+    // Resolve the OS service only when requesting permission or delivering an alert.
+    // A session presentation (including hardware-free tests) needs neither.
+    private lazy var center: UNUserNotificationCenter = suppliedCenter ?? .current()
     private var policy = BatteryNotificationPolicy()
     private(set) var isEnabled = false
 
-    init(center: UNUserNotificationCenter = .current()) {
-        self.center = center
+    init(center: UNUserNotificationCenter? = nil) {
+        suppliedCenter = center
     }
 
     func requestAuthorization(completion: @escaping (Bool, Error?) -> Void) {

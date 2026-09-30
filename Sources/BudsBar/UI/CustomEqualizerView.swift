@@ -50,6 +50,7 @@ final class CustomEqualizerPanelController {
 struct CustomEqualizerView: View {
     @Bindable var buds: Buds
     let close: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var baseline: CustomEqualizer?
     @State private var draft: [Int8] = []
     @State private var name = ""
@@ -83,6 +84,18 @@ struct CustomEqualizerView: View {
     private var dirty: Bool {
         guard let baseline else { return creating }
         return draft != baseline.gains || name != baseline.name
+    }
+
+    private var feedbackAnimation: Animation {
+        .easeOut(duration: reduceMotion ? 0.10 : 0.14)
+    }
+
+    private var editorStatusText: String {
+        dirty ? "草稿未应用" : stale ? "耳机状态待更新" : baseline?.isSelected == true ? "使用中" : "未启用"
+    }
+
+    private var footerStatusText: String {
+        confirmDelete ? "删除“\(baseline?.name ?? "")”？此操作会移除耳机中的曲线。" : statusText
     }
 
     var body: some View {
@@ -136,6 +149,8 @@ struct CustomEqualizerView: View {
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(curve.name).lineLimit(1).truncationMode(.middle)
                                         .font(.system(size: 13, weight: .medium))
+                                        .contentTransition(.opacity)
+                                        .animation(feedbackAnimation, value: curve.name)
                                     if curve.isSelected {
                                         Label("使用中", systemImage: "checkmark.circle.fill")
                                             .font(.caption2).foregroundStyle(.secondary)
@@ -213,9 +228,19 @@ struct CustomEqualizerView: View {
                 }
                 Spacer(minLength: 0)
                 VStack(alignment: .trailing, spacing: 4) {
-                    Label(dirty ? "草稿未应用" : stale ? "耳机状态待更新" : baseline?.isSelected == true ? "使用中" : "未启用",
-                          systemImage: dirty ? "pencil.circle" : !stale && baseline?.isSelected == true ? "checkmark.circle.fill" : "circle")
-                    if savedLocally { Text("本地已保存").foregroundStyle(Color.accentColor) }
+                    Label {
+                        Text(editorStatusText)
+                            .contentTransition(.opacity)
+                            .animation(feedbackAnimation, value: editorStatusText)
+                    } icon: {
+                        Image(systemName: dirty ? "pencil.circle" : !stale && baseline?.isSelected == true ? "checkmark.circle.fill" : "circle")
+                    }
+                    if savedLocally {
+                        Text("本地已保存").foregroundStyle(Color.accentColor)
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(!savedLocally)
+                            .transition(.opacity.animation(feedbackAnimation))
+                    }
                 }
                 .font(.caption).foregroundStyle(.secondary).fixedSize()
             }
@@ -297,10 +322,14 @@ struct CustomEqualizerView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 if busy || buds.customEqualizerFeature == .loading { ProgressView().controlSize(.small) }
-                Text(confirmDelete ? "删除“\(baseline?.name ?? "")”？此操作会移除耳机中的曲线。" : statusText)
+                Text(footerStatusText)
                     .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    .contentTransition(.opacity)
+                    .animation(feedbackAnimation, value: footerStatusText)
             }
             .frame(height: 30, alignment: .leading)
+            // Action branches switch immediately: fading an outgoing destructive
+            // button would retain its hit area and accessibility during removal.
             HStack(spacing: 12) {
                 if confirmDelete, let baseline {
                     Button("确认删除", role: .destructive) { send(.delete, target: baseline); confirmDelete = false }
@@ -419,7 +448,7 @@ struct EQBandSlider: NSViewRepresentable {
     @Environment(\.isEnabled) private var isEnabled
 
     static func makeSlider() -> NSSlider {
-        let slider = NSSlider(frame: NSRect(x: 0, y: 0, width: 36, height: 180))
+        let slider = EQHapticSlider(frame: NSRect(x: 0, y: 0, width: 36, height: 180))
         slider.isVertical = true
         slider.minValue = -6
         slider.maxValue = 6
@@ -449,7 +478,9 @@ struct EQBandSlider: NSViewRepresentable {
         var value: Binding<Int8>
         init(value: Binding<Int8>) { self.value = value }
         @objc func changed(_ sender: NSSlider) {
-            value.wrappedValue = Int8(max(-6, min(6, sender.doubleValue.rounded())))
+            let gain = Int8(max(-6, min(6, sender.doubleValue.rounded())))
+            value.wrappedValue = gain
+            (sender as? EQHapticSlider)?.didChangeGain(gain)
         }
     }
 }

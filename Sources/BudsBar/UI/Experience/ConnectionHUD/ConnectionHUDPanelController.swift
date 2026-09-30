@@ -11,25 +11,41 @@ final class ConnectionHUDViewModel: ObservableObject {
     @Published var snapshot: HUDSnapshot?
     @Published var presentationState: HUDPresentationState = .hidden
     @Published var connectedPulseTrigger = 0
+    @Published var reduceMotion = false
+    @Published var isHovered = false
     var onHoverChange: ((Bool) -> Void)?
 }
 
-final class ConnectionHUDPanelController {
+final class ConnectionHUDPanelController: NSObject {
     private let panel: NSPanel
     private let model = ConnectionHUDViewModel()
     private var lifecycle = HUDPresentationLifecycle()
     private var transitionWorkItem: DispatchWorkItem?
     private var presentationGeneration = 0
     private var presentationVisibleFrame: NSRect?
-    private var isHovering = false
+    private var isHovering: Bool { model.isHovered }
+    private var lastTargetFrame: NSRect?
+    private let pointerLocation: () -> NSPoint
+    private let scheduleTransition: (TimeInterval, DispatchWorkItem) -> Void
+    private var expandedHoldDeadline: Date?
     private(set) var visibleEvent: ConnectionHUDEvent?
 
-    init() {
+    override convenience init() {
+        self.init(pointerLocation: { NSEvent.mouseLocation }, scheduleTransition: {
+            DispatchQueue.main.asyncAfter(deadline: .now() + $0, execute: $1)
+        })
+    }
+
+    init(pointerLocation: @escaping () -> NSPoint,
+         scheduleTransition: @escaping (TimeInterval, DispatchWorkItem) -> Void) {
+        self.pointerLocation = pointerLocation
+        self.scheduleTransition = scheduleTransition
         panel = ConnectionHUDPanel(
             contentRect: NSRect(origin: .zero, size: HUDPanelLayout.compactSize),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: true)
+        super.init()
         panel.level = .floating
         panel.isOpaque = false
         panel.backgroundColor = .clear
@@ -40,26 +56,34 @@ final class ConnectionHUDPanelController {
         model.onHoverChange = { [weak self] hovering in
             self?.hoverChanged(hovering)
         }
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(accessibilityDisplayOptionsChanged),
+            name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
+    }
+
+    deinit {
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
     }
 
     func show(event: ConnectionHUDEvent, snapshot: HUDSnapshot) {
         let wasVisible = panel.isVisible
+        let previousState = model.presentationState
         presentationGeneration += 1
         cancelTransition()
         model.event = event
         model.snapshot = snapshot
         visibleEvent = event
-        isHovering = false
+        model.isHovered = wasVisible && model.isHovered && panel.frame.contains(pointerLocation())
 
         if wasVisible {
-            continueWithNewEvent()
+            continueWithNewEvent(from: previousState)
         } else {
             beginPresentation()
         }
     }
 
     func update(snapshot: HUDSnapshot) {
-        guard visibleEvent != nil else { return }
+        guard visibleEvent != nil, model.snapshot != snapshot else { return }
         model.snapshot = snapshot
         guard model.presentationState.usesExpandedGeometry else { return }
         resizePanel(for: model.presentationState, duration: MotionTokens.standard)
@@ -72,7 +96,8 @@ final class ConnectionHUDPanelController {
         }
         presentationGeneration += 1
         cancelTransition()
-        beginDismissal(duration: HUDMotionTokens.dismiss)
+        beginDismissal(duration: lifecycle.reduceMotion
+            ? HUDMotionTokens.reducedTransition : HUDMotionTokens.dismiss)
     }
 
     /// Hands the shared slot over without a fade. Used when a user-triggered HUD needs the
@@ -84,18 +109,27 @@ final class ConnectionHUDPanelController {
 
     private func beginPresentation() {
         lifecycle = HUDPresentationLifecycle()
-        model.presentationState = lifecycle.start()
+        model.reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        model.presentationState = lifecycle.start(reduceMotion: model.reduceMotion)
         if model.event != .unexpectedDisconnected {
             model.connectedPulseTrigger += 1
         }
         presentationVisibleFrame = pointerScreenVisibleFrame()
 
-        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let reduceMotion = lifecycle.reduceMotion
+        let size = reduceMotion ? expandedSize : HUDPanelLayout.compactSize
+        expandedHoldDeadline = Date().addingTimeInterval(
+            (reduceMotion ? HUDMotionTokens.reducedTransition
+                : HUDMotionTokens.compactEnter + HUDMotionTokens.compactHold
+                    + HUDMotionTokens.batteryRevealDelay + HUDMotionTokens.modeRevealDelay
+                    + HUDMotionTokens.expandSettle) + HUDMotionTokens.expandedHold)
         panel.alphaValue = 0
         let entryOffset: CGFloat = reduceMotion ? 0 : 10
         panel.setFrame(
-            targetFrame(size: HUDPanelLayout.compactSize, yOffset: entryOffset),
+            targetFrame(size: size, yOffset: entryOffset),
             display: false)
+        lastTargetFrame = targetFrame(size: size)
+        panel.contentView?.layoutSubtreeIfNeeded()
         panel.orderFront(nil)
 
         NSAnimationContext.runAnimationGroup { context in
@@ -112,23 +146,31 @@ final class ConnectionHUDPanelController {
         }
 
         if reduceMotion {
-            schedule(after: HUDMotionTokens.reducedTransition) { [weak self] in
-                self?.beginReducedExpandedState()
-            }
+            scheduleExpandedHold(after: HUDMotionTokens.reducedTransition + HUDMotionTokens.expandedHold)
         } else {
             scheduleAdvance(after: HUDMotionTokens.compactEnter + HUDMotionTokens.compactHold)
         }
     }
 
-    private func continueWithNewEvent() {
-        panel.alphaValue = 1
+    private func continueWithNewEvent(from previousState: HUDPresentationState) {
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = MotionTokens.fast
+            panel.animator().alphaValue = 1
+        }
         lifecycle = HUDPresentationLifecycle()
-        let state = lifecycle.restartExpansion()
+        model.reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        _ = lifecycle.start(reduceMotion: model.reduceMotion)
+        let state = lifecycle.restartExpansion(preservingExpandedContent:
+            previousState.usesExpandedGeometry && previousState != .expanding(.container))
         model.presentationState = state
 
-        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-            beginReducedExpandedState()
+        if state == .expanded {
+            resizePanel(for: state, duration: MotionTokens.standard)
+            scheduleExpandedHold()
         } else {
+            expandedHoldDeadline = Date().addingTimeInterval(
+                HUDMotionTokens.batteryRevealDelay + HUDMotionTokens.modeRevealDelay
+                    + HUDMotionTokens.expandSettle + HUDMotionTokens.expandedHold)
             resizePanel(for: state, duration: HUDMotionTokens.expand)
             scheduleAdvance(after: HUDMotionTokens.batteryRevealDelay)
         }
@@ -161,6 +203,8 @@ final class ConnectionHUDPanelController {
             scheduleAdvance(after: HUDMotionTokens.collapse + HUDMotionTokens.compactExitHold)
         case .dismissing:
             beginDismissal(duration: HUDMotionTokens.dismiss, advancesLifecycle: true)
+        case .fadingExpanded:
+            beginDismissal(duration: HUDMotionTokens.reducedTransition, advancesLifecycle: true)
         case .hidden:
             finishPresentation()
         case .compact:
@@ -170,35 +214,50 @@ final class ConnectionHUDPanelController {
 
     private func scheduleExpandedHold(after delay: TimeInterval = HUDMotionTokens.expandedHold) {
         guard !isHovering else { return }
-        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-            schedule(after: delay) { [weak self] in
-                self?.beginDismissal(duration: HUDMotionTokens.reducedTransition)
-            }
+        expandedHoldDeadline = Date().addingTimeInterval(delay)
+        scheduleAdvance(after: delay)
+    }
+
+    @objc private func accessibilityDisplayOptionsChanged() {
+        guard panel.isVisible, !lifecycle.reduceMotion,
+              NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        // Invalidate any old fade completion before replacing an in-flight frame animation.
+        presentationGeneration += 1
+        cancelTransition()
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            model.reduceMotion = true
+            model.presentationState = lifecycle.enableReducedMotion()
+        }
+        // Preference changes must stop an in-flight frame animation even at the same target.
+        lastTargetFrame = nil
+        resizePanel(for: model.presentationState, duration: 0)
+        if model.presentationState == .fadingExpanded {
+            beginDismissal(duration: HUDMotionTokens.reducedTransition)
         } else {
-            scheduleAdvance(after: delay)
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = HUDMotionTokens.reducedTransition
+                panel.animator().alphaValue = 1
+            }
+            let remaining = expandedHoldDeadline.map { max(0, $0.timeIntervalSinceNow) }
+                ?? HUDMotionTokens.expandedHold
+            scheduleExpandedHold(after: remaining)
         }
     }
 
-    private func beginReducedExpandedState() {
-        lifecycle = HUDPresentationLifecycle()
-        _ = lifecycle.restartExpansion()
-        _ = lifecycle.advance()
-        _ = lifecycle.advance()
-        model.presentationState = lifecycle.advance()
-        panel.setFrame(targetFrame(size: expandedSize), display: true)
-        scheduleExpandedHold()
-    }
-
     private func beginDismissal(duration: TimeInterval, advancesLifecycle: Bool = false) {
-        model.presentationState = .dismissing
+        model.presentationState = lifecycle.beginDismissal()
         let generation = presentationGeneration
+        let exitFrame = targetFrame(size: HUDPanelLayout.compactSize, yOffset: 5)
+        if !lifecycle.reduceMotion { lastTargetFrame = exitFrame }
         NSAnimationContext.runAnimationGroup { context in
             context.duration = duration
             context.timingFunction = CAMediaTimingFunction(name: .easeIn)
             panel.animator().alphaValue = 0
-            if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            if !lifecycle.reduceMotion {
                 panel.animator().setFrame(
-                    targetFrame(size: HUDPanelLayout.compactSize, yOffset: 5),
+                    exitFrame,
                     display: true)
             }
         } completionHandler: { [weak self] in
@@ -212,9 +271,11 @@ final class ConnectionHUDPanelController {
     }
 
     private func hoverChanged(_ hovering: Bool) {
-        isHovering = hovering
+        guard model.isHovered != hovering else { return }
+        model.isHovered = hovering
         guard model.presentationState == .expanded else { return }
         cancelTransition()
+        expandedHoldDeadline = nil
         if !hovering {
             scheduleExpandedHold(after: HUDMotionTokens.hoverExitHold)
         }
@@ -222,10 +283,13 @@ final class ConnectionHUDPanelController {
 
     private func resizePanel(for state: HUDPresentationState, duration: TimeInterval) {
         let size = state.usesExpandedGeometry ? expandedSize : HUDPanelLayout.compactSize
+        let frame = targetFrame(size: size)
+        guard frame != lastTargetFrame else { return }
+        lastTargetFrame = frame
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : duration
+            context.duration = lifecycle.reduceMotion ? 0 : duration
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            panel.animator().setFrame(targetFrame(size: size), display: true)
+            panel.animator().setFrame(frame, display: true)
         }
     }
 
@@ -248,7 +312,7 @@ final class ConnectionHUDPanelController {
             action()
         }
         transitionWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+        scheduleTransition(delay, work)
     }
 
     private func cancelTransition() {
@@ -265,14 +329,16 @@ final class ConnectionHUDPanelController {
     private func resetHiddenState() {
         visibleEvent = nil
         presentationVisibleFrame = nil
-        isHovering = false
+        model.isHovered = false
+        lastTargetFrame = nil
+        expandedHoldDeadline = nil
         lifecycle = HUDPresentationLifecycle()
         model.presentationState = .hidden
         panel.alphaValue = 0
     }
 
     private func pointerScreenVisibleFrame() -> NSRect? {
-        let point = NSEvent.mouseLocation
+        let point = pointerLocation()
         let screen = NSScreen.screens.first(where: { NSMouseInRect(point, $0.frame, false) })
             ?? NSScreen.main
         return screen?.visibleFrame

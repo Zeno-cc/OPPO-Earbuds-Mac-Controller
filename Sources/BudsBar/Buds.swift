@@ -34,6 +34,7 @@ final class Buds: NSObject {
     var batteryObservations: [BudsProtocol.BatterySlot: BatterySlotObservation] = [:]
     var connectionGeneration: UInt64 = 0
     var deviceInformationFeature: FeatureState<DeviceInformation> = .unknown
+    var deviceInformationRefresh: DeviceInformationRefreshState = .idle
     var equalizerFeature: FeatureState<EQPreset> = .unknown
     var customEqualizerFeature: FeatureState<[CustomEqualizer]> = .unknown
     var gameModeFeature: FeatureState<Bool> = .unknown
@@ -56,7 +57,7 @@ final class Buds: NSObject {
     /// Set while a connect/disconnect is in flight so the toggle can't be double-fired.
     var isBusy = false
     var lastError: String?
-    private let settings = AppSettings()
+    private let settings: AppSettings
     private let batteryNotificationCoordinator = BatteryNotificationCoordinator()
     var launchesAtLogin: Bool { settings.launchesAtLogin }
     var lowBatteryNotificationsEnabled: Bool {
@@ -76,6 +77,7 @@ final class Buds: NSObject {
     var onQuickHotKeyChange: ((HotKeyDefinition?) -> Bool)?
     /// Narration for controls triggered without opening the panel.
     var onQuickActionFeedback: ((QuickActionFeedback) -> Void)?
+    var onQuickActionFeedbackDismissed: (() -> Void)?
     var suppressesUnexpectedDisconnectPresentation: Bool {
         isSwitchedOff || isSwitchingDevice
     }
@@ -144,8 +146,13 @@ final class Buds: NSObject {
     /// Set while a quick control is in flight, so the HUD only narrates the entry points
     /// that promised an outcome and only until that command resolves.
     private var pendingQuickFeedback: QuickActionFeedbackStyle?
+    private var quickFeedbackOperation: (id: UInt64, generation: UInt64)?
     /// Fires when an armed intent outlives its window without a mode report.
     private var quickIntentTimeoutWorkItem: DispatchWorkItem?
+    @ObservationIgnored private var quickNow: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+    @ObservationIgnored private var scheduleQuickTimeout: (TimeInterval, DispatchWorkItem) -> Void = {
+        DispatchQueue.main.asyncAfter(deadline: .now() + $0, execute: $1)
+    }
 
     /// False when no paired device speaks the control protocol — nothing to drive.
     var isPaired: Bool { device != nil }
@@ -243,6 +250,7 @@ final class Buds: NSObject {
     private var lastSoundFeatureRequestAt = Date.distantPast
 
     override init() {
+        settings = AppSettings()
         super.init()
         refreshPairedDevices()
         device = selectedDeviceCandidate()
@@ -273,6 +281,21 @@ final class Buds: NSObject {
         }
         pollTimer?.tolerance = Self.pollInterval / 2   // no deadline worth a forced wakeup
         attemptAutoConnect()
+    }
+
+    /// An existing session can drive the presentation without device discovery or polling.
+    /// Used by hardware-free integration tests of the real session/feedback boundary.
+    init(session: EarbudsSession, now: @escaping () -> TimeInterval,
+         scheduleTimeout: @escaping (TimeInterval, DispatchWorkItem) -> Void,
+         settings: AppSettings = AppSettings()) {
+        self.settings = settings
+        super.init()
+        earbudsSession = session
+        protocolProfile = session.profile
+        quickNow = now
+        scheduleQuickTimeout = scheduleTimeout
+        session.onStateChange = { [weak self] in self?.syncSessionState() }
+        syncSessionState()
     }
 
     // MARK: - Launch at login
@@ -364,14 +387,17 @@ final class Buds: NSObject {
         _ = onQuickHotKeyChange?(definition)
     }
 
-    func panelWillOpen() {
+    /// Returns true when the introduction, rather than the control popover, owns this entry.
+    @discardableResult
+    func panelWillOpen() -> Bool {
         // Opening the panel is an explicit, in-app action: drop the one-shot intent and any
         // pending narration so the popover and a stale quick action cannot both act.
         cancelQuickIntent()
         let version = "1.5"
         guard WhatsNewPresentationPolicy.requestIfNeeded(version: version, settings: settings)
-        else { return }
+        else { return false }
         onWhatsNewRequested?()
+        return onWhatsNewRequested != nil
     }
 
     func showWhatsNew() {
@@ -438,6 +464,7 @@ final class Buds: NSObject {
         batteryFeature = .unknown
         batteryObservations = [:]
         deviceInformationFeature = .unknown
+        deviceInformationRefresh = .idle
         equalizerFeature = .unknown
         customEqualizerFeature = .unknown
         gameModeFeature = .unknown
@@ -853,7 +880,7 @@ final class Buds: NSObject {
         controlTransport = nil
         isControlChannelOpen = false
         // A one-shot intent belongs to the link it was armed on; nothing may carry it over.
-        cancelQuickIntent()
+        cancelQuickIntent(dismissFeedback: intent == .disconnectedByUser || quickNoiseState.isWaitingForMode)
     }
 
     private func controlChannelBecameActive() {
@@ -875,6 +902,7 @@ final class Buds: NSObject {
         connectionGeneration = next.connectionGeneration
         batteryFeature = next.batteryFeature
         deviceInformationFeature = next.deviceInformationFeature
+        deviceInformationRefresh = next.deviceInformationRefresh
         equalizerFeature = next.equalizerFeature
         customEqualizerFeature = next.customEqualizerFeature
         gameModeFeature = next.gameModeFeature
@@ -899,14 +927,24 @@ final class Buds: NSObject {
         ancLevel = next.ancLevel
         quickNoiseState.confirmedMode = next.mode
         quickNoiseState.operationPending = next.operations[.noise]?.phase.isPending == true
+        if quickNoiseState.isWaitingForMode,
+           !isControlChannelOpen || quickNoiseState.pendingGeneration != next.connectionGeneration {
+            cancelQuickIntent()
+        }
         if let mode = next.mode {
+            let wasWaiting = quickNoiseState.isWaitingForMode
             let decision = QuickNoiseReducer.modeArrived(
                 &quickNoiseState, mode: mode, generation: next.connectionGeneration,
-                now: ProcessInfo.processInfo.systemUptime)
+                now: quickNow())
             quickIntentTimeoutWorkItem?.cancel()
             quickIntentTimeoutWorkItem = nil
-            if case .send(let target) = decision, !set(mode: target) {
-                _ = reportQuickFailure(lastError ?? "降噪切换未能发送")
+            if case .send(let target) = decision {
+                if pendingQuickFeedback == .full { onQuickActionFeedback?(.submitted) }
+                if !set(mode: target) {
+                    _ = reportQuickFailure(lastError ?? "降噪切换未能发送")
+                }
+            } else if wasWaiting {
+                _ = reportQuickFailure("未收到当前模式，未执行切换")
             }
         }
         resolveQuickFeedback()
@@ -980,14 +1018,18 @@ final class Buds: NSObject {
 
     @discardableResult
     private func quickToggle(style: QuickActionFeedbackStyle) -> Bool {
+        // A repeated press must neither send again nor steal the accepted command's reply.
+        guard operations[.noise]?.phase.isPending != true else { return false }
+        if quickNoiseState.isWaitingForMode { return true }
         guard canQuickNoiseControl else {
             return reportQuickFailure("控制通道尚未就绪，请先连接耳机")
         }
         quickNoiseState.confirmedMode = mode
         pendingQuickFeedback = style
+        quickFeedbackOperation = nil
         switch QuickNoiseReducer.toggle(
             &quickNoiseState, generation: connectionGeneration,
-            now: ProcessInfo.processInfo.systemUptime) {
+            now: quickNow()) {
         case .send(let target):
             if style == .full { onQuickActionFeedback?(.submitted) }
             guard set(mode: target) else {
@@ -998,7 +1040,7 @@ final class Buds: NSObject {
             // The buds have not reported the current mode yet. The reducer holds the intent
             // for two seconds and sends at most one command once the real mode arrives; the
             // timer below is what makes "two seconds" true when that report never comes.
-            if style == .full { onQuickActionFeedback?(.submitted) }
+            if style == .full { onQuickActionFeedback?(.waitingForMode) }
             scheduleQuickIntentTimeout()
             return true
         case .ignored:
@@ -1010,28 +1052,36 @@ final class Buds: NSObject {
     /// silent mode report, and every later press would be a no-op that still appeared to act.
     private func scheduleQuickIntentTimeout() {
         quickIntentTimeoutWorkItem?.cancel()
+        guard let since = quickNoiseState.pendingSince,
+              let generation = quickNoiseState.pendingGeneration else { return }
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
+            guard self.quickNoiseState.isWaitingForMode,
+                  self.quickNoiseState.pendingSince == since,
+                  self.quickNoiseState.pendingGeneration == generation else { return }
             self.quickIntentTimeoutWorkItem = nil
-            guard self.quickNoiseState.isWaitingForMode else { return }
-            self.cancelQuickIntent()
+            QuickNoiseReducer.cancel(&self.quickNoiseState)
+            _ = self.reportQuickFailure("未收到当前模式，未执行切换")
         }
         quickIntentTimeoutWorkItem = work
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + QuickNoiseReducer.intentTimeout, execute: work)
+        scheduleQuickTimeout(max(0, since + QuickNoiseReducer.intentTimeout - quickNow()), work)
     }
 
     /// Drops an armed intent together with the narration it owned.
-    func cancelQuickIntent() {
+    func cancelQuickIntent(dismissFeedback: Bool = true) {
         quickIntentTimeoutWorkItem?.cancel()
         quickIntentTimeoutWorkItem = nil
         QuickNoiseReducer.cancel(&quickNoiseState)
         pendingQuickFeedback = nil
+        quickFeedbackOperation = nil
+        if dismissFeedback { onQuickActionFeedbackDismissed?() }
     }
 
     /// Explicit menu choices: the menu is its own acknowledgement, so only failures surface.
     @discardableResult
     func selectNoiseMode(_ requested: NoiseMode) -> Bool {
+        guard operations[.noise]?.phase.isPending != true else { return false }
+        cancelQuickIntent()
         guard canQuickNoiseControl else {
             return reportQuickFailure("控制通道尚未就绪，请先连接耳机")
         }
@@ -1044,6 +1094,8 @@ final class Buds: NSObject {
 
     @discardableResult
     func selectANCLevel(_ requested: ANCLevel) -> Bool {
+        guard operations[.noise]?.phase.isPending != true else { return false }
+        cancelQuickIntent()
         guard canQuickNoiseControl else {
             return reportQuickFailure("控制通道尚未就绪，请先连接耳机")
         }
@@ -1069,21 +1121,31 @@ final class Buds: NSObject {
     @discardableResult
     private func reportQuickFailure(_ message: String) -> Bool {
         pendingQuickFeedback = nil
+        quickFeedbackOperation = nil
         onQuickActionFeedback?(.failed(message))
         return false
     }
 
     /// Turns a finished noise operation into the message the entry point promised to show.
     private func resolveQuickFeedback() {
-        guard let style = pendingQuickFeedback, let operation = operations[.noise] else { return }
+        guard !quickNoiseState.isWaitingForMode,
+              let style = pendingQuickFeedback, let operation = operations[.noise] else { return }
+        if quickFeedbackOperation == nil {
+            guard operation.phase.isPending else { return }
+            quickFeedbackOperation = (operation.id, operation.generation)
+        }
+        guard quickFeedbackOperation?.id == operation.id,
+              quickFeedbackOperation?.generation == operation.generation else { return }
         switch operation.phase {
         case .confirmed:
             pendingQuickFeedback = nil
+            quickFeedbackOperation = nil
             guard style == .full, let mode else { return }
             onQuickActionFeedback?(.confirmed(
                 mode, mode == .noiseCancellation ? ancLevel : nil))
         case .differentState, .timedOut, .sendFailed, .cancelled:
             pendingQuickFeedback = nil
+            quickFeedbackOperation = nil
             onQuickActionFeedback?(.failed(operation.phase.message ?? "降噪切换未确认"))
         case .queued, .sent:
             break
@@ -1138,7 +1200,12 @@ final class Buds: NSObject {
 
     @discardableResult
     func refreshDeviceInformation() -> Bool {
-        earbudsSession?.retryDeviceInformationSync() ?? false
+        guard deviceInformationRefresh != .loading else { return false }
+        guard isControlChannelOpen else {
+            deviceInformationRefresh = .failed("控制通道尚未就绪，请先连接耳机")
+            return false
+        }
+        return earbudsSession?.retryDeviceInformationSync() ?? false
     }
 
     private static let soundFeatureRefreshInterval: TimeInterval = 10

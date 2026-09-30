@@ -3,10 +3,12 @@ import Foundation
 struct ConnectionExperienceObservation: Equatable {
     let isConnected: Bool
     let suppressUnexpectedDisconnect: Bool
+    let deviceIdentity: String?
 
-    init(isConnected: Bool, suppressUnexpectedDisconnect: Bool = false) {
+    init(isConnected: Bool, suppressUnexpectedDisconnect: Bool = false, deviceIdentity: String? = nil) {
         self.isConnected = isConnected
         self.suppressUnexpectedDisconnect = suppressUnexpectedDisconnect
+        self.deviceIdentity = deviceIdentity
     }
 }
 
@@ -28,6 +30,7 @@ struct ConnectionExperience {
     static let duplicateWindow: TimeInterval = 5
 
     private var lastConnected: Bool?
+    private var deviceIdentity: String?
     private var pendingUnexpectedDisconnect = false
     private var reconnectIsExpected = false
     private var lastPresentation: (event: ConnectionHUDEvent, date: Date)?
@@ -36,9 +39,22 @@ struct ConnectionExperience {
         _ observation: ConnectionExperienceObservation,
         at date: Date = Date()
     ) -> [ConnectionExperienceEffect] {
+        if lastConnected != nil, deviceIdentity != observation.deviceIdentity {
+            lastPresentation = nil
+            return rebaseline(observation)
+        }
+        deviceIdentity = observation.deviceIdentity
         guard let previous = lastConnected else {
             lastConnected = observation.isConnected
             return [.establishBaseline]
+        }
+        if !observation.isConnected, observation.suppressUnexpectedDisconnect {
+            let shouldCancel = pendingUnexpectedDisconnect
+            pendingUnexpectedDisconnect = false
+            reconnectIsExpected = false
+            lastPresentation = nil
+            lastConnected = false
+            return shouldCancel ? [.cancelUnexpectedDisconnect] : []
         }
         guard previous != observation.isConnected else { return [] }
         lastConnected = observation.isConnected
@@ -52,16 +68,6 @@ struct ConnectionExperience {
             let event: ConnectionHUDEvent = reconnectIsExpected ? .reconnected : .connected
             reconnectIsExpected = false
             return presentation(event, at: date)
-        }
-
-        if observation.suppressUnexpectedDisconnect {
-            pendingUnexpectedDisconnect = false
-            reconnectIsExpected = false
-            // A deliberate disconnect is the opposite lifecycle transition. It is not
-            // presented, but it must allow a subsequent user-requested connection to be
-            // shown even when the previous connected HUD is still inside the dedupe window.
-            lastPresentation = nil
-            return []
         }
 
         pendingUnexpectedDisconnect = true
@@ -81,6 +87,10 @@ struct ConnectionExperience {
     mutating func rebaseline(
         _ observation: ConnectionExperienceObservation
     ) -> [ConnectionExperienceEffect] {
+        if deviceIdentity != observation.deviceIdentity {
+            lastPresentation = nil
+        }
+        deviceIdentity = observation.deviceIdentity
         let shouldCancel = pendingUnexpectedDisconnect
         pendingUnexpectedDisconnect = false
         reconnectIsExpected = false

@@ -63,6 +63,7 @@ struct HotKeyRecorderRow: View {
     }
 
     private func stopRecording() {
+        note = nil
         if let monitor { NSEvent.removeMonitor(monitor) }
         monitor = nil
         guard isRecording else { return }

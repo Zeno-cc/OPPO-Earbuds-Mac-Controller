@@ -19,6 +19,7 @@ struct NoiseControlSection: View {
                 pendingValue: buds.pendingMode,
                 size: .primary,
                 isEnabled: canSwitchModes,
+                isBusy: isNoisePending,
                 accessibilityLabel: "降噪模式",
                 label: { $0.label },
                 action: { buds.set(mode: $0) })
@@ -35,6 +36,7 @@ struct NoiseControlSection: View {
                         pendingValue: buds.pendingANCLevel,
                         size: .secondary,
                         isEnabled: canSwitchModes,
+                        isBusy: isNoisePending,
                         accessibilityLabel: "降噪强度",
                         label: { $0.label },
                         action: { buds.set(ancLevel: $0) })
@@ -44,7 +46,8 @@ struct NoiseControlSection: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                .transition(.opacity)
+                .transition(.opacity.animation(reduceMotion
+                    ? MotionTokens.feedback : .easeOut(duration: MotionTokens.standard)))
             }
 
             if let note = modeSwitchingNote {
@@ -60,14 +63,15 @@ struct NoiseControlSection: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .animation(
-            MotionTokens.state(reduceMotion: reduceMotion),
-            value: buds.mode)
     }
 
     private var canSwitchModes: Bool {
         buds.isControlChannelOpen && buds.supportsNoiseControl
-            && buds.pendingMode == nil && buds.pendingANCLevel == nil
+    }
+
+    private var isNoisePending: Bool {
+        buds.pendingMode != nil || buds.pendingANCLevel != nil
+            || buds.operations[.noise]?.phase.isPending == true
     }
 
     private var modeSwitchingNote: String? {

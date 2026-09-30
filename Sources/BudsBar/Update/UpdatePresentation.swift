@@ -42,6 +42,15 @@ struct UpdatePresentation: Equatable {
     private var receivedNoUpdate = false
     private var cancelled = false
 
+    /// Busy has a progress slot; errors outrank a previously discovered version.
+    func buttonSymbol(showsNoUpdateCheck: Bool) -> String? {
+        if phase.isBusy { return nil }
+        if case .failed = phase { return "exclamationmark.circle" }
+        if availableVersion != nil { return "arrow.down.circle.fill" }
+        if showsNoUpdateCheck { return "checkmark.circle" }
+        return "arrow.down.circle"
+    }
+
     mutating func begin() { receivedNoUpdate = false; cancelled = false; phase = .checking }
     mutating func found(_ version: String, at date: Date) {
         availableVersion = version

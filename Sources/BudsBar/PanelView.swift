@@ -18,7 +18,7 @@ struct PanelView: View {
                 .onGeometryChange(for: CGFloat.self) { proxy in
                     proxy.size.height
                 } action: { height in
-                    updateMeasuredHeight(&headerHeight, to: height)
+                    updateMeasuredHeight(headerHeight, to: height) { headerHeight = $0 }
                 }
 
             if let error = buds.lastError {
@@ -28,7 +28,7 @@ struct PanelView: View {
                     .onGeometryChange(for: CGFloat.self) { proxy in
                         proxy.size.height
                     } action: { height in
-                        updateMeasuredHeight(&errorHeight, to: height)
+                        updateMeasuredHeight(errorHeight, to: height) { errorHeight = $0 }
                     }
             }
 
@@ -55,13 +55,6 @@ struct PanelView: View {
             buds.refreshSoundFeatures(force: true)
             buds.refreshLaunchAtLoginState()
         }
-        .animation(stateAnimation, value: buds.isConnected)
-        .animation(stateAnimation, value: buds.lastError)
-        .animation(stateAnimation, value: buds.mode)
-        .animation(stateAnimation, value: buds.battery)
-        .animation(stateAnimation, value: buds.systemBattery)
-        .animation(stateAnimation, value: buds.equalizerFeature)
-        .animation(stateAnimation, value: buds.gameModeFeature)
     }
 
     private var contentViewport: some View {
@@ -73,7 +66,7 @@ struct PanelView: View {
                 .onGeometryChange(for: CGFloat.self) { proxy in
                     proxy.size.height
                 } action: { height in
-                    updateMeasuredHeight(&contentHeight, to: height)
+                    updateMeasuredHeight(contentHeight, to: height) { contentHeight = $0 }
                 }
         }
         .scrollIndicators(isContentOverflowing ? .automatic : .never)
@@ -172,18 +165,19 @@ struct PanelView: View {
         contentHeight > maximumViewportHeight + 0.5
     }
 
-    private var stateAnimation: Animation? {
-        MotionTokens.state(reduceMotion: reduceMotion)
-    }
-
     private var contentTransition: AnyTransition {
-        guard !reduceMotion else { return .opacity }
-        return .opacity.combined(with: .offset(y: 4))
+        .opacity.animation(reduceMotion ? MotionTokens.feedback : .easeOut(duration: MotionTokens.standard))
     }
 
-    private func updateMeasuredHeight(_ current: inout CGFloat, to newValue: CGFloat) {
+    private func updateMeasuredHeight(
+        _ current: CGFloat, to newValue: CGFloat, assign: (CGFloat) -> Void
+    ) {
         guard abs(current - newValue) > 0.5 else { return }
-        current = newValue
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            assign(newValue)
+        }
     }
 
     private func retryCurrentState() {

@@ -30,6 +30,7 @@ public struct EarbudsState: Equatable {
     public var batteryObservations: [BudsProtocol.BatterySlot: BatterySlotObservation] = [:]
     public var connectionGeneration: UInt64 = 0
     public var deviceInformationFeature: FeatureState<DeviceInformation> = .unknown
+    public var deviceInformationRefresh: DeviceInformationRefreshState = .idle
     public var equalizerFeature: FeatureState<EQPreset> = .unknown
     public var customEqualizerFeature: FeatureState<[CustomEqualizer]> = .unknown
     public var unknownEqualizerMode: UInt8?
@@ -86,6 +87,7 @@ public final class EarbudsSession {
         self.state.pendingGameMode = nil
         self.state.operations = [:]
         self.state.soundRefresh = [:]
+        self.state.deviceInformationRefresh = .idle
         self.state.placement = EarbudsPlacementState()
         self.state.unknownPlacementValues = [:]
         self.state.batteryObservations = [:]
@@ -634,38 +636,55 @@ public final class EarbudsSession {
 
     @discardableResult
     private func queryDeviceInformation() -> Bool {
+        guard state.deviceInformationRefresh != .loading else { return false }
+        let generation = connectionGeneration
+        state.deviceInformationRefresh = .loading
         switch state.deviceInformationFeature {
         case .ready:
             // A refresh should not hide information already obtained from this device.
             break
         default:
             state.deviceInformationFeature = .loading
-            onStateChange?()
         }
+        onStateChange?()
         guard commands.enqueueDeviceInformationQuery(
             profile: profile,
             completion: { [weak self] result in
-            guard let self else { return }
+            guard let self, self.connectionGeneration == generation else { return }
             switch result {
             case .success(let frame):
                 let updates = BudsProtocol.interpretDeviceInformationResponse(
                     frame, profile: self.profile)
                 if updates.isEmpty {
-                    if case .ready = self.state.deviceInformationFeature { return }
-                    self.state.deviceInformationFeature = .failed("设备信息响应格式异常")
+                    self.state.deviceInformationRefresh = .failed("设备信息响应格式异常")
+                    switch self.state.deviceInformationFeature {
+                    case .ready: break
+                    default:
+                        self.state.deviceInformationFeature = .failed("设备信息响应格式异常")
+                    }
                     self.onStateChange?()
                 } else {
+                    self.state.deviceInformationRefresh = .succeeded
                     self.apply(updates)
                 }
             case .failure(.cancelled):
-                return
+                self.state.deviceInformationRefresh = .cancelled
+                if case .loading = self.state.deviceInformationFeature {
+                    self.state.deviceInformationFeature = .unknown
+                }
+                self.onStateChange?()
             case .failure:
-                if case .ready = self.state.deviceInformationFeature { return }
-                self.state.deviceInformationFeature = .failed("读取设备信息失败")
+                self.state.deviceInformationRefresh = .failed("读取设备信息失败")
+                switch self.state.deviceInformationFeature {
+                case .ready: break
+                default:
+                    self.state.deviceInformationFeature = .failed("读取设备信息失败")
+                }
                 self.onStateChange?()
             }
         }) else {
             state.deviceInformationFeature = .unsupported
+            state.deviceInformationRefresh = .idle
             onStateChange?()
             return false
         }

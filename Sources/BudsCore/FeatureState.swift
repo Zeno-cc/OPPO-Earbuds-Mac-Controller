@@ -15,6 +15,15 @@ public enum FeatureRefreshState: Equatable {
     case failed(String)
 }
 
+/// The existing information query's outcome, independent of its cached value.
+public enum DeviceInformationRefreshState: Equatable {
+    case idle
+    case loading
+    case succeeded
+    case failed(String)
+    case cancelled
+}
+
 public enum DeviceInformationSource: Equatable {
     /// Stable information selected by the device profile rather than read from the buds.
     case profileMetadata

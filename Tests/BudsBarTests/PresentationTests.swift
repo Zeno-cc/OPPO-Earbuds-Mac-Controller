@@ -102,15 +102,6 @@ final class PresentationTests: XCTestCase {
         }
     }
 
-    func testDeviceInformationRefreshFeedbackAdvancesOnlyForEnqueuedRequest() {
-        XCTAssertEqual(
-            DeviceInformationRefreshFeedback.nextTrigger(current: 2, didEnqueue: true),
-            3)
-        XCTAssertEqual(
-            DeviceInformationRefreshFeedback.nextTrigger(current: 2, didEnqueue: false),
-            2)
-    }
-
     func testWhatsNewPanelCentersWithinVisibleScreenFrame() {
         let visibleFrame = NSRect(x: 1_440, y: 24, width: 1_920, height: 1_056)
         let panelSize = NSSize(width: 400, height: 360)

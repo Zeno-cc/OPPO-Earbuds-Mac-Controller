@@ -18,12 +18,16 @@ struct SoftwareUpdateButton: View {
                     ProgressView().controlSize(.small)
                 } else {
                     Image(systemName: symbolName)
+                        .id(symbolName)
+                        .transition(.opacity)
                         .font(.system(size: 17, weight: .medium))
                         .foregroundStyle(
                             updates.presentation.availableVersion == nil ? Color.secondary : .blue)
                 }
             }
             .frame(width: 30, height: 30)
+            .animation(MotionTokens.feedback, value: updates.presentation.phase)
+            .animation(MotionTokens.feedback, value: showsNoUpdateCheck)
             .contentShape(Rectangle())
             .background(
                 isHovered ? Color.primary.opacity(0.06) : .clear,
@@ -56,10 +60,8 @@ struct SoftwareUpdateButton: View {
     }
 
     private var symbolName: String {
-        if updates.presentation.availableVersion != nil { return "arrow.down.circle.fill" }
-        if showsNoUpdateCheck { return "checkmark.circle" }
-        if case .failed = updates.presentation.phase { return "exclamationmark.circle" }
-        return "arrow.down.circle"
+        updates.presentation.buttonSymbol(showsNoUpdateCheck: showsNoUpdateCheck)
+            ?? "arrow.down.circle"
     }
 
     private var statusText: String {

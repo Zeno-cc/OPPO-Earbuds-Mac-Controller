@@ -4,12 +4,32 @@ import SwiftUI
 
 /// What the user should be told about a quick control triggered from outside the panel.
 enum QuickActionFeedback: Equatable {
+    case waitingForMode
     /// The command was handed to the session; the buds have not answered yet.
     case submitted
     /// The buds confirmed the requested mode.
     case confirmed(NoiseMode, ANCLevel?)
     /// The command could not be confirmed, with the reason to show.
     case failed(String)
+
+    var isPending: Bool {
+        switch self {
+        case .waitingForMode, .submitted: return true
+        case .confirmed, .failed: return false
+        }
+    }
+
+    var holdDuration: TimeInterval? {
+        switch self {
+        case .waitingForMode, .submitted: return nil
+        case .confirmed: return 1.6
+        case .failed: return 2.6
+        }
+    }
+}
+
+private final class QuickActionHUDModel: ObservableObject {
+    @Published var feedback: QuickActionFeedback = .submitted
 }
 
 /// How much of a quick action's lifecycle should be narrated.
@@ -32,17 +52,23 @@ final class QuickActionHUDController {
     /// Fires when the HUD takes or releases the shared HUD slot.
     var onVisibilityChange: ((Bool) -> Void)?
 
-    private static let holdDuration: TimeInterval = 1.6
     private static let size = NSSize(width: 268, height: 52)
 
     private let panel: NSPanel
+    private let model = QuickActionHUDModel()
+    private let schedule: (TimeInterval, DispatchWorkItem) -> Void
     private var hideWorkItem: DispatchWorkItem?
-    private var isShowing = false
+    private(set) var isShowing = false
+    private var presentationVisibleFrame: NSRect?
+    var visibleFeedback: QuickActionFeedback? { isShowing ? model.feedback : nil }
     /// Guards the fade-out completion, so a feedback that arrives mid-fade is not
     /// immediately ordered out by the previous animation.
     private var presentationGeneration = 0
 
-    init() {
+    init(schedule: @escaping (TimeInterval, DispatchWorkItem) -> Void = {
+        DispatchQueue.main.asyncAfter(deadline: .now() + $0, execute: $1)
+    }) {
+        self.schedule = schedule
         panel = NSPanel(
             contentRect: NSRect(origin: .zero, size: Self.size),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -54,27 +80,36 @@ final class QuickActionHUDController {
         panel.hasShadow = true
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
-        panel.contentView = NSHostingView(rootView: QuickActionHUDView(feedback: .submitted))
+        panel.contentView = NSHostingView(rootView: QuickActionHUDView(model: model))
     }
 
     func show(_ feedback: QuickActionFeedback) {
         hideWorkItem?.cancel()
+        hideWorkItem = nil
         presentationGeneration += 1
-        panel.contentView = NSHostingView(rootView: QuickActionHUDView(feedback: feedback))
-        positionOnPointerScreen()
+        let continuesOperation = isShowing && model.feedback.isPending
+        if !continuesOperation { presentationVisibleFrame = pointerScreenVisibleFrame() }
+        model.feedback = feedback
+        positionForFeedback(feedback)
 
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         if !panel.isVisible { panel.alphaValue = 0 }
         panel.orderFrontRegardless()
         setShowing(true)
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = reduceMotion ? 0 : 0.16
+            context.duration = reduceMotion ? 0.10 : 0.16
             panel.animator().alphaValue = 1
         }
 
-        let work = DispatchWorkItem { [weak self] in self?.hide() }
+        // Waiting belongs to the session. Only a terminal result starts a reading timer.
+        guard let hold = feedback.holdDuration else { return }
+        let generation = presentationGeneration
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.presentationGeneration == generation else { return }
+            self.hide()
+        }
         hideWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.holdDuration, execute: work)
+        schedule(hold, work)
     }
 
     func hide() {
@@ -84,13 +119,24 @@ final class QuickActionHUDController {
         let generation = presentationGeneration
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = reduceMotion ? 0 : 0.18
+            context.duration = reduceMotion ? 0.10 : 0.16
             panel.animator().alphaValue = 0
         } completionHandler: { [weak self] in
             guard let self, self.presentationGeneration == generation else { return }
             self.panel.orderOut(nil)
+            self.presentationVisibleFrame = nil
             self.setShowing(false)
         }
+    }
+
+    func dismissImmediately() {
+        presentationGeneration += 1
+        hideWorkItem?.cancel()
+        hideWorkItem = nil
+        panel.orderOut(nil)
+        panel.alphaValue = 0
+        presentationVisibleFrame = nil
+        setShowing(false)
     }
 
     private func setShowing(_ value: Bool) {
@@ -100,19 +146,26 @@ final class QuickActionHUDController {
     }
 
     /// Same slot as the connection HUD's compact card: top-right of the pointer's screen.
-    private func positionOnPointerScreen() {
+    private func pointerScreenVisibleFrame() -> NSRect? {
         let point = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { NSMouseInRect(point, $0.frame, false) }
             ?? NSScreen.main
-        guard let visibleFrame = screen?.visibleFrame else { return }
-        panel.setFrameOrigin(NSPoint(
+        return screen?.visibleFrame
+    }
+
+    private func positionForFeedback(_ feedback: QuickActionFeedback) {
+        guard let visibleFrame = presentationVisibleFrame else { return }
+        let height: CGFloat = if case .failed = feedback { 76 } else { Self.size.height }
+        panel.setFrame(NSRect(
             x: visibleFrame.maxX - Self.size.width - 24,
-            y: visibleFrame.maxY - Self.size.height - 22))
+            y: visibleFrame.maxY - height - 22,
+            width: Self.size.width, height: height), display: true)
     }
 }
 
 private struct QuickActionHUDView: View {
-    let feedback: QuickActionFeedback
+    @ObservedObject var model: QuickActionHUDModel
+    private var feedback: QuickActionFeedback { model.feedback }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -121,7 +174,9 @@ private struct QuickActionHUDView: View {
                 .font(.system(size: 15, weight: .semibold))
             Text(text)
                 .font(.callout.weight(.medium))
-                .lineLimit(1)
+                .lineLimit(feedback.isPending ? 1 : 2)
+                .fixedSize(horizontal: false, vertical: true)
+                .contentTransition(.opacity)
         }
         .padding(.horizontal, 16)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -129,10 +184,13 @@ private struct QuickActionHUDView: View {
         .overlay(Capsule().stroke(tint.opacity(0.22), lineWidth: 1))
         .accessibilityElement(children: .combine)
         .accessibilityLabel(text)
+        .animation(.easeOut(duration: 0.12), value: feedback)
     }
 
     private var text: String {
         switch feedback {
+        case .waitingForMode:
+            return "正在读取当前模式…"
         case .submitted:
             return "正在切换降噪模式…"
         case .confirmed(let mode, let level):
@@ -145,7 +203,7 @@ private struct QuickActionHUDView: View {
 
     private var symbol: String {
         switch feedback {
-        case .submitted: return "hourglass"
+        case .waitingForMode, .submitted: return "hourglass"
         case .confirmed(let mode, _): return mode.symbol
         case .failed: return "exclamationmark.triangle.fill"
         }
@@ -153,7 +211,7 @@ private struct QuickActionHUDView: View {
 
     private var tint: Color {
         switch feedback {
-        case .submitted: return .secondary
+        case .waitingForMode, .submitted: return .secondary
         case .confirmed: return .accentColor
         case .failed: return .orange
         }
