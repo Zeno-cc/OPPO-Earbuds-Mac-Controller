@@ -27,6 +27,7 @@ final class ConnectionHUDPanelController: NSObject {
     private var lastTargetFrame: NSRect?
     private let pointerLocation: () -> NSPoint
     private let scheduleTransition: (TimeInterval, DispatchWorkItem) -> Void
+    private let shouldReduceMotion: () -> Bool
     private var expandedHoldDeadline: Date?
     private(set) var visibleEvent: ConnectionHUDEvent?
 
@@ -37,9 +38,11 @@ final class ConnectionHUDPanelController: NSObject {
     }
 
     init(pointerLocation: @escaping () -> NSPoint,
-         scheduleTransition: @escaping (TimeInterval, DispatchWorkItem) -> Void) {
+         scheduleTransition: @escaping (TimeInterval, DispatchWorkItem) -> Void,
+         shouldReduceMotion: @escaping () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }) {
         self.pointerLocation = pointerLocation
         self.scheduleTransition = scheduleTransition
+        self.shouldReduceMotion = shouldReduceMotion
         panel = ConnectionHUDPanel(
             contentRect: NSRect(origin: .zero, size: HUDPanelLayout.compactSize),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -109,7 +112,7 @@ final class ConnectionHUDPanelController: NSObject {
 
     private func beginPresentation() {
         lifecycle = HUDPresentationLifecycle()
-        model.reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        model.reduceMotion = shouldReduceMotion()
         model.presentationState = lifecycle.start(reduceMotion: model.reduceMotion)
         if model.event != .unexpectedDisconnected {
             model.connectedPulseTrigger += 1
@@ -158,7 +161,7 @@ final class ConnectionHUDPanelController: NSObject {
             panel.animator().alphaValue = 1
         }
         lifecycle = HUDPresentationLifecycle()
-        model.reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        model.reduceMotion = shouldReduceMotion()
         _ = lifecycle.start(reduceMotion: model.reduceMotion)
         let state = lifecycle.restartExpansion(preservingExpandedContent:
             previousState.usesExpandedGeometry && previousState != .expanding(.container))
@@ -220,7 +223,7 @@ final class ConnectionHUDPanelController: NSObject {
 
     @objc private func accessibilityDisplayOptionsChanged() {
         guard panel.isVisible, !lifecycle.reduceMotion,
-              NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+              shouldReduceMotion() else { return }
         // Invalidate any old fade completion before replacing an in-flight frame animation.
         presentationGeneration += 1
         cancelTransition()

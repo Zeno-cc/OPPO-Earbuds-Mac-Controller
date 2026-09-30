@@ -5,18 +5,26 @@ import BudsCore
 @testable import BudsBar
 
 @MainActor @Suite struct HUDContinuityTests {
-    private final class Harness {
+    @MainActor private final class Harness {
         final class Pointer { var point = NSPoint.zero }
         let clock = TestClock()
         let pointer = Pointer()
         let controller: ConnectionHUDPanelController
-        init() {
+        init(reduceMotion: Bool = false) {
             let clock = clock
             let pointer = pointer
+            // Mutable preference is captured independently of the controller's lifetime.
+            let preference = Preference(reduceMotion)
+            self.preference = preference
             controller = ConnectionHUDPanelController(pointerLocation: { pointer.point }, scheduleTransition: { delay, item in
                 clock.schedule(after: delay) { if !item.isCancelled { item.perform() } }
-            })
+            }, shouldReduceMotion: { preference.reduceMotion })
         }
+        final class Preference {
+            var reduceMotion: Bool
+            init(_ reduceMotion: Bool) { self.reduceMotion = reduceMotion }
+        }
+        let preference: Preference
         var window: NSWindow? {
             NSApp.windows.first { $0.isVisible && $0.contentViewController is NSHostingController<ConnectionHUDView> }
         }
@@ -63,13 +71,14 @@ import BudsCore
         withExtendedLifetime(observer) {}
     }
 
-    @Test func replacementFromCollapseDiscardsOldScheduledExit() throws {
-        let h = Harness()
+    @Test(arguments: [false, true])
+    func replacementFromCollapseDiscardsOldScheduledExit(reduceMotion: Bool) throws {
+        let h = Harness(reduceMotion: reduceMotion)
         defer { h.controller.dismissImmediately() }
         h.show()
         h.clock.advance(by: 3.5)
         let model = try #require(h.model)
-        #expect(model.presentationState == .collapsing(.content))
+        #expect(model.presentationState == (reduceMotion ? .fadingExpanded : .collapsing(.content)))
         h.show(.reconnected)
         #expect(model.presentationState == .expanded)
         h.clock.advance(by: 0.8)
@@ -87,8 +96,9 @@ import BudsCore
         #expect(lifecycle.advance() == .fadingExpanded)
     }
 
-    @Test func stationaryHoverSurvivesReplacementUntilActualExit() throws {
-        let h = Harness()
+    @Test(arguments: [false, true])
+    func stationaryHoverSurvivesReplacementUntilActualExit(reduceMotion: Bool) throws {
+        let h = Harness(reduceMotion: reduceMotion)
         defer { h.controller.dismissImmediately() }
         h.show()
         h.clock.advance(by: 1)
@@ -104,7 +114,25 @@ import BudsCore
         #expect(h.controller.visibleEvent == .reconnected)
         model.onHoverChange?(false)
         h.clock.advance(by: HUDMotionTokens.hoverExitHold)
-        #expect(model.presentationState == .collapsing(.content))
+        #expect(model.presentationState == (reduceMotion ? .fadingExpanded : .collapsing(.content)))
+    }
+
+    @Test func preferenceChangeDuringExpansionConvergesAtSameTargetFrame() throws {
+        let h = Harness()
+        defer { h.controller.dismissImmediately() }
+        h.show()
+        h.clock.advance(by: HUDMotionTokens.compactEnter + HUDMotionTokens.compactHold)
+        let window = try #require(h.window)
+        let model = try #require(h.model)
+        #expect(model.presentationState == .expanding(.container))
+        h.preference.reduceMotion = true
+        NSWorkspace.shared.notificationCenter.post(
+            name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
+        #expect(model.reduceMotion)
+        #expect(model.presentationState == .expanded)
+        #expect(window.frame.size == HUDPanelLayout.expandedSize(event: .connected, hasBattery: true, hasMode: true))
+        h.show(.reconnected)
+        #expect(model.reduceMotion && model.presentationState == .expanded)
     }
 
     @Test func replacementRechecksPointerAndHiddenResetClearsHover() throws {
