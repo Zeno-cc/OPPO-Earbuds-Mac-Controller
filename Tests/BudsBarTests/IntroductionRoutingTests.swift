@@ -17,6 +17,7 @@ import BudsCore
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         let settings = AppSettings(defaults: defaults)
+        settings.markWhatsNewSeen(version: "1.5")
         let session = EarbudsSession(profile: .encoAir5Pro, transport: Transport())
         let buds = Buds(session: session, now: { 0 }, scheduleTimeout: { _,_ in }, settings: settings)
         var introductions = 0
@@ -25,7 +26,8 @@ import BudsCore
         buds.onQuickActionFeedbackDismissed = { feedbackDismissals += 1 }
         #expect(buds.panelWillOpen())
         #expect(introductions == 1)
-        #expect(settings.hasSeenWhatsNew(version: "1.5"))
+        #expect(WhatsNewView.version == "1.6")
+        #expect(settings.hasSeenWhatsNew(version: "1.6"))
         #expect(!buds.panelWillOpen())
         #expect(introductions == 1)
         #expect(feedbackDismissals == 2)

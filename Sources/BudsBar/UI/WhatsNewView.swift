@@ -4,6 +4,8 @@ struct WhatsNewView: View {
     /// One width for every release panel, so the copy wraps predictably instead of being
     /// squeezed into a fixed window height.
     static let contentWidth: CGFloat = 400
+    static let version = "1.6"
+    static let title = "v\(version) 新功能"
 
     let dismiss: () -> Void
 
@@ -12,18 +14,17 @@ struct WhatsNewView: View {
             HStack {
                 EarbudsArtworkView(size: .hero)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("v1.5 新功能")
+                    Text(Self.title)
                         .font(.title2.weight(.semibold))
-                    Text("不用打开面板，也能看一眼、按一下就切换")
+                    Text("反馈更清楚，操作更连贯")
                         .foregroundStyle(.secondary)
                 }
             }
 
-            feature("菜单栏电量", symbol: "battery.100percent", detail: "直接显示左耳、右耳和充电盒电量；读不到的槽位显示 “—”，不会用合并电量猜。")
-            feature("Option + 点击", symbol: "option", detail: "在降噪与通透之间一键切换，不用打开面板。")
-            feature("全局快捷键", symbol: "command", detail: "在“更多”里自定义组合键，在任意应用中都能切换，不需要辅助功能权限。")
-            feature("右键快速菜单", symbol: "cursorarrow.click", detail: "右键菜单栏图标，直接选择降噪、通透、关闭和降噪强度。")
-            feature("操作反馈浮窗", symbol: "checkmark.circle", detail: "切换成功或失败都会给出简短提示，与连接浮窗共用同一位置，不叠加。")
+            feature("清楚的操作反馈", symbol: "checkmark.circle", detail: "等待、成功和失败分别提示；耳机确认后才更新选中状态。")
+            feature("连贯的连接浮窗", symbol: "rectangle.on.rectangle", detail: "连续事件原位衔接，鼠标悬停可继续阅读；过时提示及时撤下。")
+            feature("EQ 触觉刻度", symbol: "slider.vertical.3", detail: "支持的触控板上，拖动跨过刻度会有触觉反馈，归零使用不同触感。")
+            feature("减少动态效果", symbol: "accessibility", detail: "跟随系统设置，以简短淡入淡出替代自定义移动、缩放和弹性形变。")
 
             HStack {
                 Spacer()

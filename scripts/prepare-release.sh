@@ -1,10 +1,10 @@
 #!/bin/bash
-# Build local v1.5.1 assets. Does not install, tag, push, or upload.
+# Build local v1.6.0 assets. Does not install, tag, push, or upload.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
-VERSION=${1:?Usage: bash scripts/prepare-release.sh 1.5.1}
-[[ "$VERSION" == 1.5.1 ]] || { echo 'This release task only prepares v1.5.1' >&2; exit 2; }
+VERSION=${1:?Usage: bash scripts/prepare-release.sh 1.6.0}
+[[ "$VERSION" == 1.6.0 ]] || { echo 'This release task only prepares v1.6.0' >&2; exit 2; }
 [[ -z "$(git status --porcelain --untracked-files=all)" ]] || {
     echo 'Commit the exact candidate before preparing release assets.' >&2; exit 1;
 }
@@ -22,7 +22,7 @@ KEY=$("$SPARKLE_BIN/generate_keys" --account "$SPARKLE_ACCOUNT" -p)
 }
 bash "$ROOT/build.sh" release
 APP="$ROOT/OPPO Earbuds Mac Controller.app"
-STAGED=$(/usr/bin/mktemp -d "$ROOT/dist/.v1.5.1.XXXXXX")
+STAGED=$(/usr/bin/mktemp -d "$ROOT/dist/.v1.6.0.XXXXXX")
 trap 'rm -rf "$STAGED"' EXIT
 mkdir -p "$STAGED/package" "$STAGED/dmg"
 /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" "$STAGED/package/BudsBar-$VERSION.zip"

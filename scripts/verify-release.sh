@@ -2,9 +2,9 @@
 # Recheck one locally prepared release with the production Keychain identity.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-VERSION=${1:?Usage: bash scripts/verify-release.sh 1.5.1 [asset-directory]}
+VERSION=${1:?Usage: bash scripts/verify-release.sh 1.6.0 [asset-directory]}
 DIR=${2:-"$ROOT/dist/v$VERSION"}
-[[ "$VERSION" == 1.5.1 ]] || { echo 'Unexpected release version' >&2; exit 2; }
+[[ "$VERSION" == 1.6.0 ]] || { echo 'Unexpected release version' >&2; exit 2; }
 ZIP="$DIR/BudsBar-$VERSION.zip"
 DMG="$DIR/OPPO-Earbuds-Mac-Controller-v$VERSION-macOS.dmg"
 FEED="$DIR/appcast.xml"

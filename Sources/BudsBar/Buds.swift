@@ -393,7 +393,7 @@ final class Buds: NSObject {
         // Opening the panel is an explicit, in-app action: drop the one-shot intent and any
         // pending narration so the popover and a stale quick action cannot both act.
         cancelQuickIntent()
-        let version = "1.5"
+        let version = WhatsNewView.version
         guard WhatsNewPresentationPolicy.requestIfNeeded(version: version, settings: settings)
         else { return false }
         onWhatsNewRequested?()

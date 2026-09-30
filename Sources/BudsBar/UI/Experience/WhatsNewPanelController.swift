@@ -31,7 +31,7 @@ final class WhatsNewPanelController {
             defer: true)
         self.panel = panel
 
-        panel.title = "v1.5 新功能"
+        panel.title = WhatsNewView.title
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
         panel.isReleasedWhenClosed = false
