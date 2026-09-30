@@ -35,7 +35,7 @@
 
 [![前往下载](https://img.shields.io/badge/前往-GitHub%20Releases-blue?style=for-the-badge&logo=github)](https://github.com/Zeno-cc/OPPO-Earbuds-Mac-Controller/releases)
 
-在 Releases 页面下载 `.dmg` 安装包。双击打开后，把应用图标拖到“应用程序”快捷方式即可完成安装。
+下载 [v1.6.0 的 `.dmg` 安装包](https://github.com/Zeno-cc/OPPO-Earbuds-Mac-Controller/releases/download/v1.6.0/OPPO-Earbuds-Mac-Controller-v1.6.0-macOS.dmg)。双击打开后，把应用图标拖到“应用程序”快捷方式即可完成安装。
 
 从 v1.5.0 升级到 v1.5.1 也请先手动安装 DMG：v1.5.0 尚未内置自动更新。v1.5.1 起可在“更多 → 关于”点击小更新图标检查版本；发现新版本后图标变蓝，再点击即可查看并安装。自动检查更新不会自动安装或强制重启。由于应用目前采用 ad-hoc 签名，更新后 macOS 可能再次请求蓝牙权限；允许后才能继续控制耳机。
 
@@ -58,7 +58,7 @@ xattr -cr "/Applications/OPPO Earbuds Mac Controller.app"
 
 首次启动时，请允许应用访问蓝牙。
 
-1.6 开发版本改进了操作等待、完成及失败反馈，连接浮窗在连续事件间原位衔接，并跟随系统“减少动态效果”设置。自定义 EQ 仍按 1 dB 即时调节；支持触觉反馈的触控板上，拖动跨刻度会有轻触反馈，落到 0 dB 使用不同触感。快速拖动会减少反馈次数，不延迟数值变化或补播震动；普通鼠标及不支持触觉的设备仍可正常调节。
+v1.6.0 改进了操作等待、完成及失败反馈，连接浮窗在连续事件间原位衔接，并跟随系统“减少动态效果”设置。自定义 EQ 仍按 1 dB 即时调节；支持触觉反馈的触控板上，拖动跨刻度会有轻触反馈，落到 0 dB 使用不同触感。快速拖动会减少反馈次数，不延迟数值变化或补播震动；普通鼠标及不支持触觉的设备仍可正常调节。
 
 ## 开发验证
 

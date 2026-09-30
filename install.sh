@@ -1,10 +1,10 @@
 #!/bin/sh
-# Downloads the published v1.5.1 DMG and installs it into /Applications.
+# Downloads the published v1.6.0 DMG and installs it into /Applications.
 #   curl -fsSL https://raw.githubusercontent.com/Zeno-cc/OPPO-Earbuds-Mac-Controller/main/install.sh | sh
 set -e
 
 APP="OPPO Earbuds Mac Controller.app"
-URL="https://github.com/Zeno-cc/OPPO-Earbuds-Mac-Controller/releases/download/v1.5.1/OPPO-Earbuds-Mac-Controller-v1.5.1-macOS.dmg"
+URL="https://github.com/Zeno-cc/OPPO-Earbuds-Mac-Controller/releases/download/v1.6.0/OPPO-Earbuds-Mac-Controller-v1.6.0-macOS.dmg"
 
 TMP=$(mktemp -d)
 MOUNT="$TMP/mount"
